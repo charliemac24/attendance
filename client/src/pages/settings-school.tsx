@@ -9,10 +9,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Settings } from "lucide-react";
+import { useAuth } from "@/lib/auth";
 import type { School } from "@shared/schema";
 
 export default function SettingsSchoolPage() {
   const { toast } = useToast();
+  const { user } = useAuth();
 
   const { data: school, isLoading } = useQuery<School>({
     queryKey: ["/api/settings/school"],
@@ -64,11 +66,18 @@ export default function SettingsSchoolPage() {
 
   return (
     <div className="p-6 space-y-6 max-w-2xl mx-auto">
-      <div className="flex items-center gap-3">
-        <div className="p-2 rounded-md bg-primary/10">
-          <Settings className="h-5 w-5 text-primary" />
+      <div>
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-md bg-primary/10">
+            <Settings className="h-5 w-5 text-primary" />
+          </div>
+          <h1 className="text-xl font-bold" data-testid="text-settings-title">School Settings</h1>
         </div>
-        <h1 className="text-xl font-bold" data-testid="text-settings-title">School Settings</h1>
+        {school && (
+          <p className="text-sm text-muted-foreground mt-1 ml-12" data-testid="text-settings-school-name">
+            Configuring: {school.name}
+          </p>
+        )}
       </div>
 
       <Card>

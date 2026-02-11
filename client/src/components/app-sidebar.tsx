@@ -17,6 +17,7 @@ import {
   UserX,
   AlertTriangle,
   HelpCircle,
+  Shield,
 } from "lucide-react";
 import {
   Sidebar,
@@ -54,6 +55,7 @@ export function AppSidebar() {
     { title: "Import Students", url: "/students/import", icon: Upload },
     { title: "Grade Levels", url: "/grade-levels", icon: GraduationCap },
     { title: "Sections", url: "/sections", icon: Layers },
+    { title: "User Accounts", url: "/users", icon: Shield },
     { title: "Kiosks", url: "/kiosks", icon: ScanLine },
   ];
 
@@ -89,9 +91,14 @@ export function AppSidebar() {
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground text-sm font-bold">
             M
           </div>
-          <div>
+          <div className="min-w-0">
             <h2 className="text-sm font-semibold" data-testid="text-app-title">MYO Attendance</h2>
-            <p className="text-xs text-muted-foreground">{user?.fullName}</p>
+            <p className="text-xs text-muted-foreground truncate">{user?.fullName}</p>
+            {user?.school && (
+              <p className="text-xs text-muted-foreground truncate" data-testid="text-school-name">
+                {user.school.name}
+              </p>
+            )}
           </div>
         </div>
       </SidebarHeader>
@@ -115,7 +122,7 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {hasRole(user, "super_admin", "school_admin") && (
+        {hasRole(user, "super_admin", "school_admin", "gate_staff") && (
           <SidebarGroup>
             <SidebarGroupLabel>Today's Status</SidebarGroupLabel>
             <SidebarGroupContent>

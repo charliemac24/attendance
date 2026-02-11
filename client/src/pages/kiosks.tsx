@@ -8,7 +8,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Edit, ScanLine, Trash2 } from "lucide-react";
+import { Plus, Edit, ScanLine, Trash2, ExternalLink } from "lucide-react";
+import { Link } from "wouter";
 import type { KioskLocation } from "@shared/schema";
 
 export default function KiosksPage() {
@@ -93,6 +94,12 @@ export default function KiosksPage() {
                     <span className="text-sm text-muted-foreground ml-2">/{k.slug}</span>
                   </div>
                   <div className="flex items-center gap-1">
+                    <Link href="/gate/kiosks">
+                      <Button variant="outline" size="sm" data-testid={`button-open-scanner-${k.id}`}>
+                        <ScanLine className="h-4 w-4 mr-1" />
+                        Open Scanner
+                      </Button>
+                    </Link>
                     <Button
                       variant="ghost"
                       size="icon"

@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
+import { SchoolSelector } from "@/components/school-selector";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/login";
@@ -21,6 +22,7 @@ import SmsTemplatesPage from "@/pages/settings-sms-templates";
 import SmsLogsPage from "@/pages/sms-logs";
 import SchoolsPage from "@/pages/schools";
 import ReportsPage from "@/pages/reports";
+import UsersPage from "@/pages/users";
 
 function AuthenticatedLayout() {
   const { user, isLoading } = useAuth();
@@ -53,8 +55,9 @@ function AuthenticatedLayout() {
           <header className="flex items-center gap-2 p-2 border-b sticky top-0 z-50 bg-background">
             <SidebarTrigger data-testid="button-sidebar-toggle" />
             <div className="flex-1" />
-            <span className="text-xs text-muted-foreground mr-2" data-testid="text-user-role">
-              {user.role.replace("_", " ")}
+            {user.role === "super_admin" && <SchoolSelector />}
+            <span className="text-xs text-muted-foreground ml-2 mr-2" data-testid="text-user-role">
+              {user.role.replace(/_/g, " ")}
             </span>
           </header>
           <main className="flex-1 overflow-auto">
@@ -71,6 +74,7 @@ function AuthenticatedLayout() {
               <Route path="/settings/sms-templates" component={SmsTemplatesPage} />
               <Route path="/sms-logs" component={SmsLogsPage} />
               <Route path="/schools" component={SchoolsPage} />
+              <Route path="/users" component={UsersPage} />
               <Route path="/reports/:type" component={ReportsPage} />
               <Route component={NotFound} />
             </Switch>

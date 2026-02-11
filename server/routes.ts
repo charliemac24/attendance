@@ -93,11 +93,23 @@ export async function registerRoutes(
       if (!valid) return res.status(401).json({ message: "Invalid credentials" });
 
       req.session.userId = user.id;
-      req.session.schoolId = user.schoolId;
 
-      const school = user.schoolId ? await storage.getSchool(user.schoolId) : null;
+      let school = user.schoolId ? await storage.getSchool(user.schoolId) : null;
+      let selectedSchoolId = user.schoolId;
+
+      if (user.role === "super_admin") {
+        const allSchools = await storage.getSchools();
+        if (allSchools.length > 0) {
+          school = allSchools[0];
+          selectedSchoolId = allSchools[0].id;
+        }
+        req.session.schoolId = selectedSchoolId;
+      } else {
+        req.session.schoolId = user.schoolId;
+      }
+
       const { password: _, ...userWithoutPw } = user;
-      res.json({ ...userWithoutPw, school });
+      res.json({ ...userWithoutPw, school, selectedSchoolId });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -112,9 +124,142 @@ export async function registerRoutes(
     if (!req.session.userId) return res.status(401).json({ message: "Not authenticated" });
     const user = await storage.getUserById(req.session.userId);
     if (!user) return res.status(401).json({ message: "User not found" });
-    const school = user.schoolId ? await storage.getSchool(user.schoolId) : null;
+
+    let school = user.schoolId ? await storage.getSchool(user.schoolId) : null;
+    let selectedSchoolId = user.schoolId;
+
+    if (user.role === "super_admin") {
+      selectedSchoolId = req.session.schoolId || null;
+      if (selectedSchoolId) {
+        school = await storage.getSchool(selectedSchoolId) || null;
+      } else {
+        const allSchools = await storage.getSchools();
+        if (allSchools.length > 0) {
+          school = allSchools[0];
+          selectedSchoolId = allSchools[0].id;
+          req.session.schoolId = selectedSchoolId;
+        }
+      }
+    }
+
     const { password: _, ...userWithoutPw } = user;
-    res.json({ ...userWithoutPw, school });
+    res.json({ ...userWithoutPw, school, selectedSchoolId });
+  });
+
+  app.post("/api/auth/switch-school", requireAuth, async (req, res) => {
+    const user = await storage.getUserById(req.session.userId!);
+    if (!user || user.role !== "super_admin") {
+      return res.status(403).json({ message: "Only super admin can switch schools" });
+    }
+    const { schoolId } = req.body;
+    const school = await storage.getSchool(schoolId);
+    if (!school) return res.status(404).json({ message: "School not found" });
+    req.session.schoolId = schoolId;
+    res.json({ ok: true, school });
+  });
+
+  // User Management
+  app.get("/api/users", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const user = await storage.getUserById(req.session.userId!);
+      if (!user) return res.status(401).json({ message: "User not found" });
+
+      let userList;
+      if (user.role === "super_admin") {
+        const schoolIdFilter = req.query.school_id ? Number(req.query.school_id) : null;
+        if (schoolIdFilter) {
+          userList = await storage.getUsersBySchool(schoolIdFilter);
+        } else {
+          userList = await storage.getUsers();
+        }
+      } else {
+        if (!user.schoolId) return res.json([]);
+        userList = await storage.getUsersBySchool(user.schoolId);
+      }
+
+      const sanitized = userList.map(({ password: _, ...u }) => u);
+      res.json(sanitized);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/users", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const currentUser = await storage.getUserById(req.session.userId!);
+      if (!currentUser) return res.status(401).json({ message: "User not found" });
+
+      const { username, password, fullName, email, role, schoolId: targetSchoolId } = req.body;
+
+      if (currentUser.role === "school_admin") {
+        if (!["gate_staff", "teacher"].includes(role)) {
+          return res.status(403).json({ message: "School admin can only create gate_staff or teacher accounts" });
+        }
+        if (targetSchoolId && targetSchoolId !== currentUser.schoolId) {
+          return res.status(403).json({ message: "Cannot create users for another school" });
+        }
+      }
+
+      const assignSchoolId = currentUser.role === "super_admin" ? targetSchoolId : currentUser.schoolId;
+      const newUser = await storage.createUser({
+        username,
+        password,
+        fullName,
+        email: email || null,
+        role,
+        schoolId: assignSchoolId,
+      });
+
+      const { password: _, ...userWithoutPw } = newUser;
+      res.json(userWithoutPw);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.patch("/api/users/:id", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const currentUser = await storage.getUserById(req.session.userId!);
+      if (!currentUser) return res.status(401).json({ message: "User not found" });
+
+      const targetUser = await storage.getUserById(Number(req.params.id));
+      if (!targetUser) return res.status(404).json({ message: "User not found" });
+
+      if (currentUser.role === "school_admin" && targetUser.schoolId !== currentUser.schoolId) {
+        return res.status(403).json({ message: "Cannot edit users from another school" });
+      }
+
+      if (currentUser.role === "school_admin" && req.body.role) {
+        if (!["gate_staff", "teacher"].includes(req.body.role)) {
+          return res.status(403).json({ message: "School admin can only assign gate_staff or teacher roles" });
+        }
+      }
+
+      const updateData: any = {};
+      if (req.body.fullName) updateData.fullName = req.body.fullName;
+      if (req.body.email !== undefined) updateData.email = req.body.email;
+      if (req.body.role) updateData.role = req.body.role;
+      if (req.body.password) updateData.password = req.body.password;
+      if (req.body.schoolId !== undefined && currentUser.role === "super_admin") {
+        updateData.schoolId = req.body.schoolId;
+      }
+
+      const updated = await storage.updateUser(Number(req.params.id), updateData);
+      if (!updated) return res.status(404).json({ message: "User not found" });
+      const { password: _, ...userWithoutPw } = updated;
+      res.json(userWithoutPw);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/users/:id", requireAuth, requireRole("super_admin"), async (req, res) => {
+    try {
+      await storage.deleteUser(Number(req.params.id));
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
   });
 
   // Dashboard
@@ -158,7 +303,7 @@ export async function registerRoutes(
         return res.json({ ...result, page, pageSize });
       }
 
-      const dbStatus = status === "pending_checkout" ? "pending_checkout" : status;
+      const dbStatus = status === "pending_checkout" ? "pending_checkout" : (status as string);
       let records = await storage.getAttendancesBySchoolAndDate(schoolId, date, dbStatus);
 
       if (search) {

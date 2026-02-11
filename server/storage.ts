@@ -30,7 +30,11 @@ export interface IStorage {
   updateSchool(id: number, data: Partial<InsertSchool>): Promise<School | undefined>;
 
   // Users
+  getUsers(): Promise<User[]>;
+  getUsersBySchool(schoolId: number): Promise<User[]>;
   createUser(data: InsertUser): Promise<User>;
+  updateUser(id: number, data: Partial<InsertUser>): Promise<User | undefined>;
+  deleteUser(id: number): Promise<void>;
 
   // Students
   getStudents(schoolId: number, search?: string): Promise<any[]>;
@@ -121,10 +125,31 @@ export class DatabaseStorage implements IStorage {
     return school;
   }
 
+  async getUsers(): Promise<User[]> {
+    return db.select().from(users);
+  }
+
+  async getUsersBySchool(schoolId: number): Promise<User[]> {
+    return db.select().from(users).where(eq(users.schoolId, schoolId));
+  }
+
   async createUser(data: InsertUser): Promise<User> {
     const hashedPassword = await bcrypt.hash(data.password, 10);
     const [user] = await db.insert(users).values({ ...data, password: hashedPassword }).returning();
     return user;
+  }
+
+  async updateUser(id: number, data: Partial<InsertUser>): Promise<User | undefined> {
+    const updateData: any = { ...data };
+    if (data.password) {
+      updateData.password = await bcrypt.hash(data.password, 10);
+    }
+    const [user] = await db.update(users).set(updateData).where(eq(users.id, id)).returning();
+    return user;
+  }
+
+  async deleteUser(id: number): Promise<void> {
+    await db.delete(users).where(eq(users.id, id));
   }
 
   async getStudents(schoolId: number, search?: string): Promise<any[]> {

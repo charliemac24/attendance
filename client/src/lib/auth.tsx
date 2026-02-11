@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, getQueryFn } from "./queryClient";
 import type { User, School } from "@shared/schema";
 
-type AuthUser = User & { school?: School | null };
+export type AuthUser = User & { school?: School | null; selectedSchoolId?: number | null };
 
 interface AuthContextType {
   user: AuthUser | null;
@@ -20,7 +20,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     queryKey: ["/api/auth/me"],
     queryFn: getQueryFn({ on401: "returnNull" }),
     retry: false,
-    staleTime: 60000,
+    staleTime: 0,
   });
 
   const loginMutation = useMutation({
