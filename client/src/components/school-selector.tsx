@@ -17,9 +17,14 @@ export function SchoolSelector() {
     mutationFn: async (schoolId: number) => {
       await apiRequest("POST", "/api/auth/switch-school", { schoolId });
     },
-    onSuccess: () => {
-      queryClient.clear();
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const key = q.queryKey[0];
+          return typeof key === "string" && key !== "/api/auth/me";
+        },
+      });
     },
   });
 
