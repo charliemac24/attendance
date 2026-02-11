@@ -1,0 +1,333 @@
+Build a complete Laravel 9 (PHP 8.x) project named **MYO School Attendance Alerts** using:
+- Laravel 9
+- Blade views
+- Tailwind CSS + Vite
+- MySQL database
+- Laravel Breeze (Blade) for auth (preferred)
+
+COLOR THEME (MUST APPLY THROUGHOUT UI)
+- Primary: #00A9FF
+- Secondary: #89CFF3
+- Complementary: #A0E9FF
+
+Implementation requirements:
+- Configure Tailwind theme colors in tailwind.config.js:
+  - myoPrimary: "#00A9FF"
+  - myoSecondary: "#89CFF3"
+  - myoComplement: "#A0E9FF"
+- Use these colors consistently for:
+  - Top nav / active menu state (primary)
+  - Buttons (primary solid, secondary outline)
+  - KPI cards accents, badges, icons
+  - Focus rings and form highlights (primary)
+  - Subtle backgrounds (complementary as light background)
+- Avoid random blues. Use only these values (and appropriate opacity variants).
+
+PURPOSE
+MYO School Attendance Alerts is a multi-tenant (school-scoped), role-based school attendance + SMS notification platform. It supports QR-based kiosk check-in/out, manual attendance, per-school settings, SMS templates, and an automated absent cutoff workflow. SMS sending must use a queue job and a provider interface (default: Semaphore).
+
+HARD REQUIREMENTS
+1) Multi-tenant isolation
+- All tenant data is scoped by `school_id` by default using a global scope `SchoolScope`.
+- Tenant context stored in `app/Support/TenantContext.php`.
+- Middleware `SetTenantContext` sets current tenant:
+  - Non-super_admin: tenant = user->school
+  - Super_admin: can switch tenant via `?school_id=` or session value.
+
+2) Roles + middleware
+Roles: `super_admin`, `school_admin`, `gate_staff`, `teacher`
+- Implement `RequireRole` middleware.
+- Access rules:
+  - super_admin: global access + manage schools/users
+  - school_admin: manage data within school + settings + reports + manual attendance
+  - gate_staff: kiosk scanning + kiosk selector + limited today overview
+  - teacher: reports limited to assigned sections (teacher_sections pivot)
+
+3) Attendance statuses
+- `pending_checkout` (checked in but not checked out)
+- `late` (checked in after late time)
+- `present` (checked out)
+- `absent` (auto-marked after cutoff)
+
+4) Core flows
+A) Kiosk scan
+- Gate staff scans QR token.
+- 1st scan today => check-in (pending_checkout or late).
+- 2nd scan => check-out (present).
+- Extra scans blocked unless school setting `allow_multiple_scans` is true.
+- Log each event in attendance_events.
+- Send SMS if enabled using template tokens.
+
+B) Manual attendance (school_admin)
+- Manual check-in/out with timestamp selection.
+- Optional SMS send per manual entry.
+
+C) Absent cutoff scheduler
+- Create command `mark:absent-cutoff` that runs every minute.
+- For each school, when current time >= cutoff_time in that school's timezone:
+  - Mark all students not checked-in today as absent
+  - Log `auto_absent` event
+  - Optionally queue absence SMS when enabled
+
+SUPER ADMIN SCHOOL SMS CREDENTIALS UI (REQUIRED)
+- Super admin must be able to create/edit schools at /schools.
+- School form must include fields:
+  - semaphore_api_key
+  - semaphore_sender_name
+  - sms_enabled
+  - sms_provider
+- Only super_admin can edit semaphore_api_key and semaphore_sender_name.
+- school_admin can view sms_provider/sms_enabled but cannot edit API key fields.
+- SmsProvider must use per-school semaphore_api_key/sender_name if set; otherwise fallback to .env.
+
+DAILY STATUS PAGES (SCHOOL ADMIN) — REQUIRED
+Create separate pages for today’s attendance statuses, accessible to `school_admin` (and optionally `super_admin` when viewing a school tenant). These pages must show only records for the current tenant school and only for TODAY (in the school timezone).
+
+Routes (GET):
+- /today/present
+- /today/late
+- /today/pending-checkout
+- /today/absent
+- /today/not-checked-in-yet
+
+Behavior:
+- Present page: students who have checked out today (daily_attendances.status = 'present')
+- Late page: daily_attendances.status = 'late'
+- Pending checkout page: daily_attendances.status = 'pending_checkout'
+- Absent page: daily_attendances.status = 'absent'
+- Not checked-in yet page: active students who do NOT have a daily_attendance record for today
+
+Each page must include:
+- Header title + date (today, school timezone)
+- Search by student name/student_no
+- Filters: grade_level, section
+- Table columns: Student, Grade/Section, Check-in time, Check-out time, Status badge
+  - Not-checked-in-yet page shows Student + Grade/Section + Guardian phone (optional) + Quick actions
+- Pagination
+
+Quick actions (school_admin only):
+- From any list, allow manual check-in/check-out buttons (where appropriate).
+- Optional: send SMS toggle for manual actions.
+
+Dashboard links:
+- On /dashboard KPI cards, each KPI card should link to its corresponding /today/* page.
+
+DATE FILTERING FOR STATUS PAGES (SCHOOL ADMIN) — REQUIRED
+Enhance the /today/* pages to support filtering by any date (school timezone). Default is TODAY if no date is provided.
+
+Routing approach (choose one and implement consistently):
+Option A (recommended): keep the same routes and accept query params:
+- /today/present?date=YYYY-MM-DD
+- /today/late?date=YYYY-MM-DD
+- /today/pending-checkout?date=YYYY-MM-DD
+- /today/absent?date=YYYY-MM-DD
+- /today/not-checked-in-yet?date=YYYY-MM-DD
+
+Option B: rename route group to /attendance/* (still support old routes as redirects):
+- /attendance/present?date=YYYY-MM-DD
+... etc
+
+UI requirements:
+- Each page must have a date picker (input type="date") with:
+  - Apply button (or auto-submit on change)
+  - Quick buttons: Today, Yesterday, This Week (optional)
+- The selected date must persist in the URL query string and pagination links.
+
+Query logic per page for a given selected date:
+- Present: daily_attendances where date = selectedDate and status = 'present'
+- Late: daily_attendances where date = selectedDate and status = 'late'
+- Pending checkout: daily_attendances where date = selectedDate and status = 'pending_checkout'
+- Absent: daily_attendances where date = selectedDate and status = 'absent'
+- Not checked-in yet:
+  - active students who do NOT have a daily_attendances row for selectedDate
+  - IMPORTANT: if selectedDate is not today and the absent cutoff may not have been run historically, still treat missing attendance as "not checked in yet" (do NOT assume absent). Only show as absent if status=absent exists.
+
+Also add:
+- /dashboard should include the same date picker and when a date is selected, KPIs and lists update for that date.
+- KPI cards should link to the corresponding status page WITH the selected date preserved (e.g., /today/late?date=YYYY-MM-DD).
+
+CSV IMPORT (STUDENTS) — REQUIRED
+Add a CSV import feature for School Admin to bulk import students using THIS EXACT COLUMN FORMAT:
+
+Required headers (case-insensitive, trim spaces):
+- Grade Level
+- First Name
+- Last Name
+- Student ID
+- Contact Number
+
+Example row:
+Grade 1,Eohan Celestine D.,Macaraeg,2025-08,9171430645
+
+Where:
+- "Grade Level" maps to grade_levels.name (create if missing for the school)
+- "Student ID" maps to students.student_no (string; unique per school)
+- "Contact Number" maps to students.guardian_phone (string; store digits; accept with or without leading 0/63/+63)
+- First/Last Name map to students.first_name and students.last_name
+
+UI PAGES
+Add pages accessible to `school_admin`:
+- GET /students/import  => Upload form + download template
+- POST /students/import => Handles upload, validates, shows preview + confirms import
+- POST /students/import/confirm => Executes import
+
+CSV TEMPLATE
+- Provide a "Download CSV Template" link that downloads a sample CSV with the required headers.
+- Use comma delimiter, UTF-8.
+
+IMPORT BEHAVIOR
+- Parse CSV, ignore blank rows.
+- Validate headers match required headers (case-insensitive).
+- Validate each row:
+  - Grade Level: required
+  - First Name: required
+  - Last Name: required
+  - Student ID: required
+  - Contact Number: required, normalize digits to E.164-ish for PH:
+    - if starts with "0" and length 11 => convert to "63" + last 10 digits (e.g. 0917... => 63917...)
+    - if starts with "63" => keep
+    - if starts with "+63" => store without plus (63...)
+    - if starts with "9" and length 10 => prefix "63" (917... => 63917...)
+  - final stored guardian_phone should be digits only, typically 12 digits like 639171234567
+- If a row fails validation, do not import it. Show it in preview with error messages.
+
+PREVIEW STEP (BEFORE IMPORT)
+- After upload, show a preview table:
+  - Grade Level, First Name, Last Name, Student ID, Contact Number (normalized), Status (OK/Error), Error details
+- Provide buttons:
+  - "Confirm Import" (imports only valid rows)
+  - "Cancel"
+
+UPSERT RULES (NO DUPLICATES)
+- Use (school_id + student_no) as the unique key.
+- If student_no already exists in this school:
+  - UPDATE first_name, last_name, guardian_phone, grade_level_id (based on grade level)
+  - Preserve existing qr_token unless missing
+- If student_no does not exist:
+  - CREATE student record and generate qr_token (random unique string)
+- Ensure qr_token is unique per school or globally.
+
+DATABASE CONSTRAINTS (REQUIRED)
+- Add a unique index: students (school_id, student_no)
+- Keep existing unique index for qr_token (global or per school, but must be unique).
+
+PERMISSIONS
+- Only `school_admin` (and `super_admin` under a selected tenant) can import.
+- Scope import strictly to current tenant school.
+
+IMPLEMENTATION NOTES
+- Use a dedicated service:
+  - app/Services/StudentImportService.php with methods:
+    - parseAndValidate($uploadedFile, School $school): ImportPreviewResult
+    - importValidRows($previewResult, School $school, User $by): ImportSummary
+- Log an attendance_event is NOT needed here, but you may log an audit record in meta if desired.
+
+BONUS (OPTIONAL BUT NICE)
+- Allow CSV to include an optional "Section" column if present; if not present, leave section null.
+- If Section column exists:
+  - create/find section under the grade level for the school.
+
+
+DATA MODEL (migrations + models + relationships)
+Create tables (with indexes esp. school_id + date):
+- schools: name, timezone, late_time, cutoff_time, sms_enabled, allow_multiple_scans,
+  sms_provider ('semaphore'), semaphore_api_key nullable, semaphore_sender_name nullable
+- users: role, school_id nullable for super_admin (required for others)
+- students: school_id, student_no, first_name, last_name, grade_level_id, section_id,
+  guardian_name, guardian_phone, qr_token unique, is_active
+- grade_levels: school_id, name
+- sections: school_id, grade_level_id, name
+- teacher_sections: user_id, section_id
+- kiosk_locations: school_id, name, slug unique per school
+- daily_attendances: school_id, student_id, date, status, check_in_time, check_out_time,
+  is_late, marked_absent_at (indexes: school_id+date, student_id+date)
+- attendance_events: school_id, student_id, daily_attendance_id nullable, event_type,
+  occurred_at, performed_by_user_id nullable, kiosk_location_id nullable, meta json
+- sms_templates: school_id, type (check_in/check_out/late/absent), enabled, template_text
+- sms_logs: school_id, student_id nullable, template_type nullable, to_phone, message,
+  status (queued/sent/failed), provider_message_id, provider_response json, sent_at, error_message
+- ui_texts: school_id, key, value (stub ok)
+
+Apply SchoolScope global scope to:
+Student, GradeLevel, Section, KioskLocation, DailyAttendance, AttendanceEvent, SmsTemplate, SmsLog, UiText
+
+ROUTES + SCREENS (Blade + Tailwind)
+- GET /dashboard
+  - Today Overview KPI cards: present, late, pending_checkout, absent, not_checked_in_yet
+  - Breakdown by section table
+  - Panels: Pending Checkout list, Not Checked-in Yet list, Absentees list
+  - Recent Alerts (sms_logs)
+  - Quick Actions (manual attendance links)
+- GET /gate/kiosks (gate_staff)
+  - List kiosk locations for current school
+- GET /kiosk/{school}/{slug?} and POST scan action (gate_staff)
+  - Big scanner input (simulate scanner with text input)
+  - Post QR token to process scan and show status/result
+
+Admin CRUD (school_admin):
+- /students, /sections, /grade-levels, /kiosks
+
+Reports (school_admin + teacher w/ section filtering):
+- /reports/daily
+- /reports/absentees
+- /reports/sms-usage
+Include CSV export routes.
+
+Settings (school_admin):
+- /settings/school (timezone, late_time, cutoff_time, sms_enabled, allow_multiple_scans)
+- /settings/sms-templates (edit templates)
+- /settings/ui-texts
+
+SMS tools:
+- /sms-logs
+- /sms-test (send a test SMS using current school provider settings)
+
+SERVICES (must exist)
+- app/Services/AttendanceService.php
+  - processKioskScan(qrToken, kiosk, performedBy) => returns structured UI data
+  - manualCheckIn(...)
+  - manualCheckOut(...)
+  - markAbsentsForSchool(...)
+- app/Services/Sms/SmsProviderInterface.php
+- app/Services/Sms/SemaphoreSmsProvider.php (real HTTP if possible, otherwise safe stub if no creds)
+- app/Services/Sms/SmsService.php
+  - buildMessageFromTemplate(...) with tokens:
+    {school_name}, {student_name}, {grade_level}, {section}, {date}, {time}, {status}
+  - dispatchSendSms(...) -> dispatch SendSmsJob
+
+QUEUE + JOB
+- app/Jobs/SendSmsJob.php
+  - Sends SMS via provider
+  - Updates sms_logs from queued -> sent/failed and stores provider metadata
+
+SCHEDULER
+- app/Console/Commands/MarkAbsentCutoff.php signature: mark:absent-cutoff
+- Register in Console Kernel: everyMinute()
+
+SEEDERS (required for demo)
+Seed:
+- super_admin: super@demo.com / password
+- school: "Stars Educational Center Inc."
+- school_admin: admin@stars.com / password
+- gate_staff: gate@stars.com / password
+- teacher: teacher@stars.com / password (assigned to one section via teacher_sections)
+- grade levels + sections
+- 30 students with guardian phones + qr_token
+- default sms_templates:
+  - Check-in: "[{school_name}] {student_name} checked in at {time} on {date}."
+  - Check-out: "[{school_name}] {student_name} checked out at {time} on {date}."
+  - Late: "[{school_name}] {student_name} arrived late at {time} on {date}."
+  - Absent: "[{school_name}] {student_name} was marked absent on {date}."
+
+README (include)
+- cp .env.example .env, configure DB
+- composer install
+- php artisan key:generate
+- php artisan migrate --seed
+- npm install && npm run dev
+- php artisan serve
+- php artisan queue:work
+- php artisan schedule:work
+
+DELIVERABLE
+Generate the full working Laravel project with the above structure. Ensure it boots, migrations run, seeders work, and screens render with basic functional behavior. Make sensible defaults and do not ask follow-up questions.
