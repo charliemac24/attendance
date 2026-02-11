@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Search, Edit, Users } from "lucide-react";
+import { Plus, Search, Edit, Users, Trash2 } from "lucide-react";
 import type { Student, GradeLevel, Section } from "@shared/schema";
 
 type StudentWithRelations = Student & {
@@ -62,6 +62,21 @@ export default function StudentsPage() {
       setEditingStudent(null);
       resetForm();
       toast({ title: editingStudent ? "Student updated" : "Student created" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/students/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        predicate: (query) => (query.queryKey[0] as string)?.startsWith("/api/students"),
+      });
+      toast({ title: "Student deleted" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -184,14 +199,24 @@ export default function StudentsPage() {
                         </Badge>
                       </td>
                       <td className="py-3 px-4 text-right">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => openEdit(student)}
-                          data-testid={`button-edit-student-${student.id}`}
-                        >
-                          <Edit className="h-4 w-4" />
-                        </Button>
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => openEdit(student)}
+                            data-testid={`button-edit-student-${student.id}`}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => deleteMutation.mutate(student.id)}
+                            data-testid={`button-delete-student-${student.id}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}

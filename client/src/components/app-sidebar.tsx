@@ -94,11 +94,15 @@ export function AppSidebar() {
           <div className="min-w-0">
             <h2 className="text-sm font-semibold" data-testid="text-app-title">MYO Attendance</h2>
             <p className="text-xs text-muted-foreground truncate">{user?.fullName}</p>
-            {user?.school && (
+            {user?.role === "super_admin" ? (
+              <p className="text-xs text-muted-foreground truncate" data-testid="text-school-name">
+                Platform Admin
+              </p>
+            ) : user?.school ? (
               <p className="text-xs text-muted-foreground truncate" data-testid="text-school-name">
                 {user.school.name}
               </p>
-            )}
+            ) : null}
           </div>
         </div>
       </SidebarHeader>

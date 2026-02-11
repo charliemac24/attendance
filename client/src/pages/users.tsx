@@ -196,7 +196,7 @@ export default function UsersPage() {
                     <Button variant="ghost" size="icon" onClick={() => openEdit(u)} data-testid={`button-edit-user-${u.id}`}>
                       <Edit className="h-4 w-4" />
                     </Button>
-                    {isSuperAdmin && u.id !== currentUser?.id && (
+                    {u.id !== currentUser?.id && (
                       <Button variant="ghost" size="icon" onClick={() => deleteMutation.mutate(u.id)} data-testid={`button-delete-user-${u.id}`}>
                         <Trash2 className="h-4 w-4" />
                       </Button>

@@ -29,6 +29,8 @@ export interface IStorage {
   createSchool(data: InsertSchool): Promise<School>;
   updateSchool(id: number, data: Partial<InsertSchool>): Promise<School | undefined>;
 
+  deleteSchool(id: number): Promise<void>;
+
   // Users
   getUsers(): Promise<User[]>;
   getUsersBySchool(schoolId: number): Promise<User[]>;
@@ -43,6 +45,7 @@ export interface IStorage {
   getActiveStudents(schoolId: number): Promise<Student[]>;
   createStudent(data: InsertStudent): Promise<Student>;
   updateStudent(id: number, data: Partial<InsertStudent>): Promise<Student | undefined>;
+  deleteStudent(id: number): Promise<void>;
   upsertStudentBySchoolAndNo(schoolId: number, studentNo: string, data: Partial<InsertStudent>): Promise<Student & { wasUpdate: boolean }>;
 
   // Grade Levels
@@ -123,6 +126,28 @@ export class DatabaseStorage implements IStorage {
   async updateSchool(id: number, data: Partial<InsertSchool>): Promise<School | undefined> {
     const [school] = await db.update(schools).set(data).where(eq(schools.id, id)).returning();
     return school;
+  }
+
+  async deleteSchool(id: number): Promise<void> {
+    await db.delete(smsLogs).where(eq(smsLogs.schoolId, id));
+    await db.delete(smsTemplates).where(eq(smsTemplates.schoolId, id));
+    await db.delete(attendanceEvents).where(eq(attendanceEvents.schoolId, id));
+    await db.delete(dailyAttendances).where(eq(dailyAttendances.schoolId, id));
+    const schoolStudents = await db.select({ id: students.id }).from(students).where(eq(students.schoolId, id));
+    const studentIds = schoolStudents.map(s => s.id);
+    if (studentIds.length > 0) {
+      await db.delete(students).where(eq(students.schoolId, id));
+    }
+    await db.delete(kioskLocations).where(eq(kioskLocations.schoolId, id));
+    const schoolSections = await db.select({ id: sections.id }).from(sections).where(eq(sections.schoolId, id));
+    if (schoolSections.length > 0) {
+      const sectionIds = schoolSections.map(s => s.id);
+      await db.delete(teacherSections).where(inArray(teacherSections.sectionId, sectionIds));
+    }
+    await db.delete(sections).where(eq(sections.schoolId, id));
+    await db.delete(gradeLevels).where(eq(gradeLevels.schoolId, id));
+    await db.delete(users).where(eq(users.schoolId, id));
+    await db.delete(schools).where(eq(schools.id, id));
   }
 
   async getUsers(): Promise<User[]> {
@@ -215,6 +240,13 @@ export class DatabaseStorage implements IStorage {
   async updateStudent(id: number, data: Partial<InsertStudent>): Promise<Student | undefined> {
     const [student] = await db.update(students).set(data).where(eq(students.id, id)).returning();
     return student;
+  }
+
+  async deleteStudent(id: number): Promise<void> {
+    await db.delete(attendanceEvents).where(eq(attendanceEvents.studentId, id));
+    await db.delete(dailyAttendances).where(eq(dailyAttendances.studentId, id));
+    await db.delete(smsLogs).where(eq(smsLogs.studentId, id));
+    await db.delete(students).where(eq(students.id, id));
   }
 
   async upsertStudentBySchoolAndNo(schoolId: number, studentNo: string, data: Partial<InsertStudent>): Promise<Student & { wasUpdate: boolean }> {

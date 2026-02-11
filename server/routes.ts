@@ -253,8 +253,27 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/users/:id", requireAuth, requireRole("super_admin"), async (req, res) => {
+  app.delete("/api/users/:id", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
     try {
+      const currentUser = await storage.getUserById(req.session.userId!);
+      if (!currentUser) return res.status(401).json({ message: "User not found" });
+
+      const targetUser = await storage.getUserById(Number(req.params.id));
+      if (!targetUser) return res.status(404).json({ message: "User not found" });
+
+      if (targetUser.id === currentUser.id) {
+        return res.status(403).json({ message: "Cannot delete your own account" });
+      }
+
+      if (currentUser.role === "school_admin") {
+        if (targetUser.schoolId !== currentUser.schoolId) {
+          return res.status(403).json({ message: "Cannot delete users from another school" });
+        }
+        if (!["gate_staff", "teacher"].includes(targetUser.role)) {
+          return res.status(403).json({ message: "School admin can only delete gate_staff or teacher accounts" });
+        }
+      }
+
       await storage.deleteUser(Number(req.params.id));
       res.json({ ok: true });
     } catch (err: any) {
@@ -367,6 +386,25 @@ export async function registerRoutes(
     try {
       const student = await storage.updateStudent(Number(req.params.id), req.body);
       res.json(student);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/students/:id", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(400).json({ message: "No school context" });
+
+      const student = await storage.getStudent(Number(req.params.id));
+      if (!student) return res.status(404).json({ message: "Student not found" });
+
+      if (student.schoolId !== schoolId) {
+        return res.status(403).json({ message: "Cannot delete students from another school" });
+      }
+
+      await storage.deleteStudent(Number(req.params.id));
+      res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -851,7 +889,21 @@ export async function registerRoutes(
 
   app.post("/api/schools", requireAuth, requireRole("super_admin"), async (req, res) => {
     try {
-      res.json(await storage.createSchool(req.body));
+      const { adminUsername, adminPassword, adminFullName, adminEmail, ...schoolData } = req.body;
+      const school = await storage.createSchool(schoolData);
+
+      if (adminUsername && adminPassword) {
+        await storage.createUser({
+          username: adminUsername,
+          password: adminPassword,
+          fullName: adminFullName || `${school.name} Admin`,
+          email: adminEmail || null,
+          role: "school_admin",
+          schoolId: school.id,
+        });
+      }
+
+      res.json(school);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -860,6 +912,15 @@ export async function registerRoutes(
   app.patch("/api/schools/:id", requireAuth, requireRole("super_admin"), async (req, res) => {
     try {
       res.json(await storage.updateSchool(Number(req.params.id), req.body));
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/schools/:id", requireAuth, requireRole("super_admin"), async (req, res) => {
+    try {
+      await storage.deleteSchool(Number(req.params.id));
+      res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }

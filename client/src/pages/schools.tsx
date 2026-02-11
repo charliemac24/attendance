@@ -5,16 +5,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Edit, School } from "lucide-react";
+import { Plus, Edit, School, Trash2, Users } from "lucide-react";
 import type { School as SchoolType } from "@shared/schema";
 
 export default function SchoolsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletingSchool, setDeletingSchool] = useState<SchoolType | null>(null);
   const [editing, setEditing] = useState<SchoolType | null>(null);
   const { toast } = useToast();
 
@@ -28,6 +30,10 @@ export default function SchoolsPage() {
     smsProvider: "semaphore",
     semaphoreApiKey: "",
     semaphoreSenderName: "",
+    adminUsername: "",
+    adminPassword: "",
+    adminFullName: "",
+    adminEmail: "",
   });
 
   const { data: schools, isLoading } = useQuery<SchoolType[]>({
@@ -36,16 +42,48 @@ export default function SchoolsPage() {
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      if (editing) {
-        await apiRequest("PATCH", `/api/schools/${editing.id}`, formData);
+      const payload: any = {
+        name: formData.name,
+        timezone: formData.timezone,
+        lateTime: formData.lateTime,
+        cutoffTime: formData.cutoffTime,
+        smsEnabled: formData.smsEnabled,
+        allowMultipleScans: formData.allowMultipleScans,
+        smsProvider: formData.smsProvider,
+        semaphoreApiKey: formData.semaphoreApiKey,
+        semaphoreSenderName: formData.semaphoreSenderName,
+      };
+
+      if (!editing) {
+        payload.adminUsername = formData.adminUsername;
+        payload.adminPassword = formData.adminPassword;
+        payload.adminFullName = formData.adminFullName;
+        payload.adminEmail = formData.adminEmail;
+        await apiRequest("POST", "/api/schools", payload);
       } else {
-        await apiRequest("POST", "/api/schools", formData);
+        await apiRequest("PATCH", `/api/schools/${editing.id}`, payload);
       }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/schools"] });
       setDialogOpen(false);
       toast({ title: editing ? "School updated" : "School created" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/schools/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/schools"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      setDeleteDialogOpen(false);
+      setDeletingSchool(null);
+      toast({ title: "School deleted" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -64,6 +102,10 @@ export default function SchoolsPage() {
       smsProvider: "semaphore",
       semaphoreApiKey: "",
       semaphoreSenderName: "",
+      adminUsername: "",
+      adminPassword: "",
+      adminFullName: "",
+      adminEmail: "",
     });
     setDialogOpen(true);
   };
@@ -80,8 +122,17 @@ export default function SchoolsPage() {
       smsProvider: school.smsProvider,
       semaphoreApiKey: school.semaphoreApiKey || "",
       semaphoreSenderName: school.semaphoreSenderName || "",
+      adminUsername: "",
+      adminPassword: "",
+      adminFullName: "",
+      adminEmail: "",
     });
     setDialogOpen(true);
+  };
+
+  const confirmDelete = (school: SchoolType) => {
+    setDeletingSchool(school);
+    setDeleteDialogOpen(true);
   };
 
   return (
@@ -91,7 +142,12 @@ export default function SchoolsPage() {
           <div className="p-2 rounded-md bg-primary/10">
             <School className="h-5 w-5 text-primary" />
           </div>
-          <h1 className="text-xl font-bold" data-testid="text-schools-title">Schools</h1>
+          <div>
+            <h1 className="text-xl font-bold" data-testid="text-schools-title">Schools</h1>
+            <p className="text-sm text-muted-foreground">
+              Manage all schools on the platform
+            </p>
+          </div>
         </div>
         <Button onClick={openCreate} data-testid="button-add-school">
           <Plus className="h-4 w-4 mr-1" />
@@ -124,8 +180,11 @@ export default function SchoolsPage() {
                     >
                       SMS {school.smsEnabled ? "On" : "Off"}
                     </Badge>
-                    <Button variant="ghost" size="icon" onClick={() => openEdit(school)}>
+                    <Button variant="ghost" size="icon" onClick={() => openEdit(school)} data-testid={`button-edit-school-${school.id}`}>
                       <Edit className="h-4 w-4" />
+                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => confirmDelete(school)} data-testid={`button-delete-school-${school.id}`}>
+                      <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
                 </div>
@@ -135,6 +194,7 @@ export default function SchoolsPage() {
             <div className="p-12 text-center">
               <School className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
               <p className="text-muted-foreground">No schools yet</p>
+              <p className="text-xs text-muted-foreground mt-1">Create your first school to get started</p>
             </div>
           )}
         </CardContent>
@@ -144,6 +204,9 @@ export default function SchoolsPage() {
         <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit School" : "Add School"}</DialogTitle>
+            <DialogDescription>
+              {editing ? "Update school settings" : "Create a new school with admin credentials"}
+            </DialogDescription>
           </DialogHeader>
           <form
             onSubmit={(e) => {
@@ -153,7 +216,7 @@ export default function SchoolsPage() {
             className="space-y-4"
           >
             <div className="space-y-2">
-              <Label>Name</Label>
+              <Label>School Name</Label>
               <Input
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
@@ -161,6 +224,55 @@ export default function SchoolsPage() {
                 data-testid="input-school-name"
               />
             </div>
+
+            {!editing && (
+              <div className="space-y-3 p-3 border rounded-md">
+                <div className="flex items-center gap-2">
+                  <Users className="h-4 w-4 text-muted-foreground" />
+                  <Label className="text-sm font-medium">School Admin Account</Label>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  These credentials will be used by the school to log in and manage their own data.
+                </p>
+                <div className="space-y-2">
+                  <Label>Admin Username</Label>
+                  <Input
+                    value={formData.adminUsername}
+                    onChange={(e) => setFormData({ ...formData, adminUsername: e.target.value })}
+                    required
+                    data-testid="input-admin-username"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Admin Password</Label>
+                  <Input
+                    type="password"
+                    value={formData.adminPassword}
+                    onChange={(e) => setFormData({ ...formData, adminPassword: e.target.value })}
+                    required
+                    data-testid="input-admin-password"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Admin Full Name</Label>
+                  <Input
+                    value={formData.adminFullName}
+                    onChange={(e) => setFormData({ ...formData, adminFullName: e.target.value })}
+                    data-testid="input-admin-fullname"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Admin Email</Label>
+                  <Input
+                    type="email"
+                    value={formData.adminEmail}
+                    onChange={(e) => setFormData({ ...formData, adminEmail: e.target.value })}
+                    data-testid="input-admin-email"
+                  />
+                </div>
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label>Timezone</Label>
               <Input
@@ -234,6 +346,30 @@ export default function SchoolsPage() {
               </Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete School</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete <strong>{deletingSchool?.name}</strong>? This will permanently remove all data associated with this school including students, attendance records, users, and settings. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => deletingSchool && deleteMutation.mutate(deletingSchool.id)}
+              disabled={deleteMutation.isPending}
+              data-testid="button-confirm-delete-school"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete School"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
