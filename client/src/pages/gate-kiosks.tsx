@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { ScanLine, CheckCircle, XCircle, Clock, UserCheck } from "lucide-react";
@@ -14,6 +15,7 @@ interface ScanResult {
   success: boolean;
   message: string;
   studentName?: string;
+  photoUrl?: string | null;
   status?: string;
   action?: string;
   time?: string;
@@ -26,6 +28,17 @@ export default function GateKiosksPage() {
   const [recentScans, setRecentScans] = useState<ScanResult[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+
+  const focusQrInput = () => {
+    // Delay focus to the next frame so it works reliably after state updates/render.
+    requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      const len = input.value.length;
+      input.setSelectionRange(len, len);
+    });
+  };
 
   const { data: kiosks } = useQuery<KioskLocation[]>({
     queryKey: ["/api/kiosks"],
@@ -52,7 +65,7 @@ export default function GateKiosksPage() {
       queryClient.invalidateQueries({
         predicate: (query) => (query.queryKey[0] as string)?.startsWith("/api/dashboard"),
       });
-      inputRef.current?.focus();
+      focusQrInput();
     },
     onError: (err: any) => {
       const result: ScanResult = {
@@ -62,7 +75,7 @@ export default function GateKiosksPage() {
       setLastResult(result);
       setRecentScans((prev) => [result, ...prev.slice(0, 9)]);
       setQrInput("");
-      inputRef.current?.focus();
+      focusQrInput();
     },
   });
 
@@ -74,8 +87,38 @@ export default function GateKiosksPage() {
   };
 
   useEffect(() => {
-    inputRef.current?.focus();
+    focusQrInput();
   }, [selectedKiosk]);
+
+  useEffect(() => {
+    const handleWindowFocus = () => focusQrInput();
+    const handleVisibilityChange = () => {
+      if (!document.hidden) focusQrInput();
+    };
+
+    window.addEventListener("focus", handleWindowFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", handleWindowFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Keep the session alive while kiosk screen is open and idle at the gate.
+    const intervalId = window.setInterval(() => {
+      fetch("/api/auth/me", {
+        method: "GET",
+        credentials: "include",
+        cache: "no-store",
+      }).catch(() => {
+        // Ignore transient network errors; next interval will retry.
+      });
+    }, 60_000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   return (
     <div className="p-6 space-y-6 max-w-3xl mx-auto">
@@ -118,6 +161,7 @@ export default function GateKiosksPage() {
                   ref={inputRef}
                   value={qrInput}
                   onChange={(e) => setQrInput(e.target.value)}
+                  onBlur={focusQrInput}
                   placeholder="Scan or enter QR code..."
                   className="text-lg"
                   autoFocus
@@ -140,6 +184,22 @@ export default function GateKiosksPage() {
       {lastResult && (
         <Card className={lastResult.success ? "border-green-200 dark:border-green-800" : "border-red-200 dark:border-red-800"}>
           <CardContent className="p-6 text-center">
+            {lastResult.studentName && (
+              <div className="mb-4 flex justify-center">
+                <Avatar className="h-24 w-24 border">
+                  <AvatarImage src={lastResult.photoUrl || ""} alt={lastResult.studentName} />
+                  <AvatarFallback className="text-xl">
+                    {lastResult.studentName
+                      .split(" ")
+                      .filter(Boolean)
+                      .slice(0, 2)
+                      .map((n) => n[0])
+                      .join("")
+                      .toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+              </div>
+            )}
             {lastResult.success ? (
               <CheckCircle className="h-12 w-12 text-green-600 dark:text-green-400 mx-auto mb-3" />
             ) : (

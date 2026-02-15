@@ -1,9 +1,9 @@
 import { db } from "./db";
-import { eq, and, sql, like, or, notInArray, inArray, gte, lte, count, desc } from "drizzle-orm";
+import { eq, and, sql, like, or, inArray, gte, lte, desc } from "drizzle-orm";
 import {
   schools, users, students, gradeLevels, sections,
   kioskLocations, dailyAttendances, attendanceEvents,
-  smsTemplates, smsLogs, teacherSections,
+  smsTemplates, smsLogs, teacherSections, schoolHolidays,
   type School, type InsertSchool,
   type User, type InsertUser,
   type Student, type InsertStudent,
@@ -14,9 +14,21 @@ import {
   type AttendanceEvent, type InsertAttendanceEvent,
   type SmsTemplate, type InsertSmsTemplate,
   type SmsLog, type InsertSmsLog,
+  type SchoolHoliday, type InsertSchoolHoliday,
 } from "@shared/schema";
 import bcrypt from "bcryptjs";
 import { randomBytes } from "crypto";
+
+const DEFAULT_SMS_TEMPLATES: Array<{ type: string; text: string; enabled: boolean }> = [
+  { type: "check_in", text: "[{school_name}] {student_name} checked in at {time} on {date}.", enabled: true },
+  { type: "check_out", text: "[{school_name}] {student_name} checked out at {time} on {date}.", enabled: true },
+  { type: "out_final", text: "[{school_name}] {student_name} dismissed at {time} on {date}.", enabled: true },
+  { type: "break_out", text: "[{school_name}] {student_name} went out for break at {time} on {date}.", enabled: false },
+  { type: "break_in", text: "[{school_name}] {student_name} returned from break at {time} on {date}.", enabled: false },
+  { type: "early_out", text: "[{school_name}] {student_name} left early at {time} on {date}.", enabled: false },
+  { type: "late", text: "[{school_name}] {student_name} arrived late at {time} on {date}.", enabled: true },
+  { type: "absent", text: "[{school_name}] {student_name} was marked absent on {date}.", enabled: true },
+];
 
 export interface IStorage {
   // Auth
@@ -86,9 +98,18 @@ export interface IStorage {
   getSmsLogs(schoolId: number): Promise<any[]>;
   createSmsLog(data: InsertSmsLog): Promise<SmsLog>;
 
+  // Holidays
+  getHolidays(schoolId: number): Promise<SchoolHoliday[]>;
+  createHoliday(data: InsertSchoolHoliday): Promise<SchoolHoliday>;
+  updateHoliday(id: number, data: Partial<InsertSchoolHoliday>): Promise<SchoolHoliday | undefined>;
+  deleteHoliday(id: number): Promise<void>;
+  isHoliday(schoolId: number, date: string): Promise<boolean>;
+  getHolidayDatesInRange(schoolId: number, startDate: string, endDate: string): Promise<Set<string>>;
+
   // Dashboard
   getDashboardKpis(schoolId: number, date: string): Promise<any>;
   getSectionBreakdown(schoolId: number, date: string): Promise<any[]>;
+  getAttendanceIntelligence(schoolId: number, date: string): Promise<any>;
 
   // Reports
   getAttendanceReport(schoolId: number, startDate: string, endDate: string, gradeId?: number, sectionId?: number): Promise<any[]>;
@@ -99,6 +120,26 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  private async ensureSmsTemplatesForSchool(schoolId: number): Promise<void> {
+    const existing = await db
+      .select({ type: smsTemplates.type })
+      .from(smsTemplates)
+      .where(eq(smsTemplates.schoolId, schoolId));
+    const existingTypes = new Set(existing.map((row) => row.type));
+
+    const missing = DEFAULT_SMS_TEMPLATES.filter((t) => !existingTypes.has(t.type));
+    if (missing.length === 0) return;
+
+    await db.insert(smsTemplates).values(
+      missing.map((t) => ({
+        schoolId,
+        type: t.type,
+        enabled: t.enabled,
+        templateText: t.text,
+      })),
+    );
+  }
+
   async getUserByUsername(username: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.username, username));
     return user;
@@ -119,16 +160,19 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createSchool(data: InsertSchool): Promise<School> {
-    const [school] = await db.insert(schools).values(data).returning();
-    return school;
+    const [{ id }] = await db.insert(schools).values(data).$returningId();
+    const [school] = await db.select().from(schools).where(eq(schools.id, id));
+    return school!;
   }
 
   async updateSchool(id: number, data: Partial<InsertSchool>): Promise<School | undefined> {
-    const [school] = await db.update(schools).set(data).where(eq(schools.id, id)).returning();
+    await db.update(schools).set(data).where(eq(schools.id, id));
+    const [school] = await db.select().from(schools).where(eq(schools.id, id));
     return school;
   }
 
   async deleteSchool(id: number): Promise<void> {
+    await db.delete(schoolHolidays).where(eq(schoolHolidays.schoolId, id));
     await db.delete(smsLogs).where(eq(smsLogs.schoolId, id));
     await db.delete(smsTemplates).where(eq(smsTemplates.schoolId, id));
     await db.delete(attendanceEvents).where(eq(attendanceEvents.schoolId, id));
@@ -160,8 +204,9 @@ export class DatabaseStorage implements IStorage {
 
   async createUser(data: InsertUser): Promise<User> {
     const hashedPassword = await bcrypt.hash(data.password, 10);
-    const [user] = await db.insert(users).values({ ...data, password: hashedPassword }).returning();
-    return user;
+    const [{ id }] = await db.insert(users).values({ ...data, password: hashedPassword }).$returningId();
+    const [user] = await db.select().from(users).where(eq(users.id, id));
+    return user!;
   }
 
   async updateUser(id: number, data: Partial<InsertUser>): Promise<User | undefined> {
@@ -169,7 +214,8 @@ export class DatabaseStorage implements IStorage {
     if (data.password) {
       updateData.password = await bcrypt.hash(data.password, 10);
     }
-    const [user] = await db.update(users).set(updateData).where(eq(users.id, id)).returning();
+    await db.update(users).set(updateData).where(eq(users.id, id));
+    const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
   }
 
@@ -189,6 +235,7 @@ export class DatabaseStorage implements IStorage {
         sectionId: students.sectionId,
         guardianName: students.guardianName,
         guardianPhone: students.guardianPhone,
+        photoUrl: students.photoUrl,
         qrToken: students.qrToken,
         isActive: students.isActive,
         gradeLevelName: gradeLevels.name,
@@ -233,12 +280,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createStudent(data: InsertStudent): Promise<Student> {
-    const [student] = await db.insert(students).values(data).returning();
-    return student;
+    const [{ id }] = await db.insert(students).values(data).$returningId();
+    const [student] = await db.select().from(students).where(eq(students.id, id));
+    return student!;
   }
 
   async updateStudent(id: number, data: Partial<InsertStudent>): Promise<Student | undefined> {
-    const [student] = await db.update(students).set(data).where(eq(students.id, id)).returning();
+    await db.update(students).set(data).where(eq(students.id, id));
+    const [student] = await db.select().from(students).where(eq(students.id, id));
     return student;
   }
 
@@ -255,11 +304,12 @@ export class DatabaseStorage implements IStorage {
     );
 
     if (existing.length > 0) {
-      const [updated] = await db.update(students).set(data).where(eq(students.id, existing[0].id)).returning();
+      await db.update(students).set(data).where(eq(students.id, existing[0].id));
+      const [updated] = await db.select().from(students).where(eq(students.id, existing[0].id));
       return { ...updated, wasUpdate: true };
     } else {
       const qrToken = randomBytes(16).toString("hex");
-      const [created] = await db.insert(students).values({
+      const [{ id }] = await db.insert(students).values({
         schoolId,
         studentNo,
         firstName: data.firstName || "",
@@ -270,7 +320,8 @@ export class DatabaseStorage implements IStorage {
         guardianPhone: data.guardianPhone || null,
         qrToken,
         isActive: true,
-      }).returning();
+      }).$returningId();
+      const [created] = await db.select().from(students).where(eq(students.id, id));
       return { ...created, wasUpdate: false };
     }
   }
@@ -280,12 +331,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createGradeLevel(data: InsertGradeLevel): Promise<GradeLevel> {
-    const [gl] = await db.insert(gradeLevels).values(data).returning();
-    return gl;
+    const [{ id }] = await db.insert(gradeLevels).values(data).$returningId();
+    const [gl] = await db.select().from(gradeLevels).where(eq(gradeLevels.id, id));
+    return gl!;
   }
 
   async updateGradeLevel(id: number, data: Partial<InsertGradeLevel>): Promise<GradeLevel | undefined> {
-    const [gl] = await db.update(gradeLevels).set(data).where(eq(gradeLevels.id, id)).returning();
+    await db.update(gradeLevels).set(data).where(eq(gradeLevels.id, id));
+    const [gl] = await db.select().from(gradeLevels).where(eq(gradeLevels.id, id));
     return gl;
   }
 
@@ -298,7 +351,8 @@ export class DatabaseStorage implements IStorage {
       and(eq(gradeLevels.schoolId, schoolId), eq(gradeLevels.name, name))
     );
     if (existing.length > 0) return existing[0];
-    const [created] = await db.insert(gradeLevels).values({ schoolId, name }).returning();
+    const [{ id }] = await db.insert(gradeLevels).values({ schoolId, name }).$returningId();
+    const [created] = await db.select().from(gradeLevels).where(eq(gradeLevels.id, id));
     return created;
   }
 
@@ -317,12 +371,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createSection(data: InsertSection): Promise<Section> {
-    const [section] = await db.insert(sections).values(data).returning();
-    return section;
+    const [{ id }] = await db.insert(sections).values(data).$returningId();
+    const [section] = await db.select().from(sections).where(eq(sections.id, id));
+    return section!;
   }
 
   async updateSection(id: number, data: Partial<InsertSection>): Promise<Section | undefined> {
-    const [section] = await db.update(sections).set(data).where(eq(sections.id, id)).returning();
+    await db.update(sections).set(data).where(eq(sections.id, id));
+    const [section] = await db.select().from(sections).where(eq(sections.id, id));
     return section;
   }
 
@@ -335,12 +391,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createKiosk(data: InsertKioskLocation): Promise<KioskLocation> {
-    const [kiosk] = await db.insert(kioskLocations).values(data).returning();
-    return kiosk;
+    const [{ id }] = await db.insert(kioskLocations).values(data).$returningId();
+    const [kiosk] = await db.select().from(kioskLocations).where(eq(kioskLocations.id, id));
+    return kiosk!;
   }
 
   async updateKiosk(id: number, data: Partial<InsertKioskLocation>): Promise<KioskLocation | undefined> {
-    const [kiosk] = await db.update(kioskLocations).set(data).where(eq(kioskLocations.id, id)).returning();
+    await db.update(kioskLocations).set(data).where(eq(kioskLocations.id, id));
+    const [kiosk] = await db.select().from(kioskLocations).where(eq(kioskLocations.id, id));
     return kiosk;
   }
 
@@ -356,12 +414,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createDailyAttendance(data: InsertDailyAttendance): Promise<DailyAttendance> {
-    const [da] = await db.insert(dailyAttendances).values(data).returning();
-    return da;
+    const [{ id }] = await db.insert(dailyAttendances).values(data).$returningId();
+    const [da] = await db.select().from(dailyAttendances).where(eq(dailyAttendances.id, id));
+    return da!;
   }
 
   async updateDailyAttendance(id: number, data: Partial<InsertDailyAttendance>): Promise<DailyAttendance | undefined> {
-    const [da] = await db.update(dailyAttendances).set(data).where(eq(dailyAttendances.id, id)).returning();
+    await db.update(dailyAttendances).set(data).where(eq(dailyAttendances.id, id));
+    const [da] = await db.select().from(dailyAttendances).where(eq(dailyAttendances.id, id));
     return da;
   }
 
@@ -383,8 +443,10 @@ export class DatabaseStorage implements IStorage {
         checkInTime: dailyAttendances.checkInTime,
         checkOutTime: dailyAttendances.checkOutTime,
         isLate: dailyAttendances.isLate,
-        studentName: sql<string>`${students.firstName} || ' ' || ${students.lastName}`,
+        studentName: sql<string>`CONCAT(${students.firstName}, ' ', ${students.lastName})`,
         studentNo: students.studentNo,
+        gradeLevelId: students.gradeLevelId,
+        sectionId: students.sectionId,
         gradeLevel: gradeLevels.name,
         section: sections.name,
         guardianPhone: students.guardianPhone,
@@ -405,6 +467,11 @@ export class DatabaseStorage implements IStorage {
     page: number = 1,
     pageSize: number = 20
   ): Promise<{ records: any[]; total: number }> {
+    const isHoliday = await this.isHoliday(schoolId, date);
+    if (isHoliday) {
+      return { records: [], total: 0 };
+    }
+
     const checkedInStudentIds = db
       .select({ studentId: dailyAttendances.studentId })
       .from(dailyAttendances)
@@ -436,14 +503,14 @@ export class DatabaseStorage implements IStorage {
     const whereClause = and(...conditions);
 
     const [{ count: totalCount }] = await db
-      .select({ count: sql<number>`count(*)::int` })
+      .select({ count: sql<number>`count(*)` })
       .from(students)
       .where(whereClause);
 
     const records = await db
       .select({
         studentId: students.id,
-        studentName: sql<string>`${students.firstName} || ' ' || ${students.lastName}`,
+        studentName: sql<string>`CONCAT(${students.firstName}, ' ', ${students.lastName})`,
         studentNo: students.studentNo,
         gradeLevel: gradeLevels.name,
         section: sections.name,
@@ -468,15 +535,16 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createAttendanceEvent(data: InsertAttendanceEvent): Promise<AttendanceEvent> {
-    const [event] = await db.insert(attendanceEvents).values(data).returning();
-    return event;
+    const [{ id }] = await db.insert(attendanceEvents).values(data).$returningId();
+    const [event] = await db.select().from(attendanceEvents).where(eq(attendanceEvents.id, id));
+    return event!;
   }
 
   async getRecentEvents(schoolId: number, limit: number = 10): Promise<any[]> {
     return db
       .select({
         id: attendanceEvents.id,
-        studentName: sql<string>`${students.firstName} || ' ' || ${students.lastName}`,
+        studentName: sql<string>`CONCAT(${students.firstName}, ' ', ${students.lastName})`,
         eventType: attendanceEvents.eventType,
         occurredAt: attendanceEvents.occurredAt,
       })
@@ -488,11 +556,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getSmsTemplates(schoolId: number): Promise<SmsTemplate[]> {
+    await this.ensureSmsTemplatesForSchool(schoolId);
     return db.select().from(smsTemplates).where(eq(smsTemplates.schoolId, schoolId));
   }
 
   async updateSmsTemplate(id: number, data: Partial<InsertSmsTemplate>): Promise<SmsTemplate | undefined> {
-    const [template] = await db.update(smsTemplates).set(data).where(eq(smsTemplates.id, id)).returning();
+    await db.update(smsTemplates).set(data).where(eq(smsTemplates.id, id));
+    const [template] = await db.select().from(smsTemplates).where(eq(smsTemplates.id, id));
     return template;
   }
 
@@ -511,7 +581,7 @@ export class DatabaseStorage implements IStorage {
         sentAt: smsLogs.sentAt,
         errorMessage: smsLogs.errorMessage,
         createdAt: smsLogs.createdAt,
-        studentName: sql<string>`${students.firstName} || ' ' || ${students.lastName}`,
+        studentName: sql<string>`CONCAT(${students.firstName}, ' ', ${students.lastName})`,
       })
       .from(smsLogs)
       .leftJoin(students, eq(smsLogs.studentId, students.id))
@@ -521,15 +591,65 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createSmsLog(data: InsertSmsLog): Promise<SmsLog> {
-    const [log] = await db.insert(smsLogs).values(data).returning();
-    return log;
+    const [{ id }] = await db.insert(smsLogs).values(data).$returningId();
+    const [log] = await db.select().from(smsLogs).where(eq(smsLogs.id, id));
+    return log!;
+  }
+
+  async getHolidays(schoolId: number): Promise<SchoolHoliday[]> {
+    return db
+      .select()
+      .from(schoolHolidays)
+      .where(eq(schoolHolidays.schoolId, schoolId))
+      .orderBy(desc(schoolHolidays.date));
+  }
+
+  async createHoliday(data: InsertSchoolHoliday): Promise<SchoolHoliday> {
+    const [{ id }] = await db.insert(schoolHolidays).values(data).$returningId();
+    const [holiday] = await db.select().from(schoolHolidays).where(eq(schoolHolidays.id, id));
+    return holiday!;
+  }
+
+  async updateHoliday(id: number, data: Partial<InsertSchoolHoliday>): Promise<SchoolHoliday | undefined> {
+    await db.update(schoolHolidays).set(data).where(eq(schoolHolidays.id, id));
+    const [holiday] = await db.select().from(schoolHolidays).where(eq(schoolHolidays.id, id));
+    return holiday;
+  }
+
+  async deleteHoliday(id: number): Promise<void> {
+    await db.delete(schoolHolidays).where(eq(schoolHolidays.id, id));
+  }
+
+  async isHoliday(schoolId: number, date: string): Promise<boolean> {
+    const [holiday] = await db
+      .select({ id: schoolHolidays.id })
+      .from(schoolHolidays)
+      .where(and(eq(schoolHolidays.schoolId, schoolId), eq(schoolHolidays.date, date)));
+    return Boolean(holiday);
+  }
+
+  async getHolidayDatesInRange(schoolId: number, startDate: string, endDate: string): Promise<Set<string>> {
+    const rows = await db
+      .select({ date: schoolHolidays.date })
+      .from(schoolHolidays)
+      .where(
+        and(
+          eq(schoolHolidays.schoolId, schoolId),
+          gte(schoolHolidays.date, startDate),
+          lte(schoolHolidays.date, endDate),
+        ),
+      );
+
+    return new Set(rows.map((r) => r.date));
   }
 
   async getDashboardKpis(schoolId: number, date: string) {
+    const isHoliday = await this.isHoliday(schoolId, date);
+
     const attendances = await db
       .select({
         status: dailyAttendances.status,
-        count: sql<number>`count(*)::int`,
+        count: sql<number>`count(*)`,
       })
       .from(dailyAttendances)
       .where(
@@ -538,7 +658,7 @@ export class DatabaseStorage implements IStorage {
       .groupBy(dailyAttendances.status);
 
     const [{ count: totalActive }] = await db
-      .select({ count: sql<number>`count(*)::int` })
+      .select({ count: sql<number>`count(*)` })
       .from(students)
       .where(and(eq(students.schoolId, schoolId), eq(students.isActive, true)));
 
@@ -550,22 +670,26 @@ export class DatabaseStorage implements IStorage {
     const checkedIn = Object.values(statusMap).reduce((a, b) => a + b, 0);
 
     return {
+      isHoliday,
       present: statusMap["present"] || 0,
       late: statusMap["late"] || 0,
       pendingCheckout: statusMap["pending_checkout"] || 0,
       absent: statusMap["absent"] || 0,
-      notCheckedIn: totalActive - checkedIn,
+      notCheckedIn: isHoliday ? 0 : totalActive - checkedIn,
       total: totalActive,
     };
   }
 
   async getSectionBreakdown(schoolId: number, date: string): Promise<any[]> {
+    const isHoliday = await this.isHoliday(schoolId, date);
+    if (isHoliday) return [];
+
     const result = await db
       .select({
         section: sections.name,
         gradeLevel: gradeLevels.name,
         status: dailyAttendances.status,
-        count: sql<number>`count(*)::int`,
+        count: sql<number>`count(*)`,
       })
       .from(dailyAttendances)
       .innerJoin(students, eq(dailyAttendances.studentId, students.id))
@@ -598,6 +722,187 @@ export class DatabaseStorage implements IStorage {
     return Array.from(sectionMap.values());
   }
 
+  async getAttendanceIntelligence(schoolId: number, date: string): Promise<any> {
+    const end = new Date(date);
+    const endIso = end.toISOString().slice(0, 10);
+    const start = new Date(end);
+    start.setDate(start.getDate() - 27);
+    const startIso = start.toISOString().slice(0, 10);
+    const split = new Date(end);
+    split.setDate(split.getDate() - 13);
+    const splitIso = split.toISOString().slice(0, 10);
+
+    const roster = await db
+      .select({
+        id: students.id,
+        studentNo: students.studentNo,
+        firstName: students.firstName,
+        lastName: students.lastName,
+        gradeLevelName: gradeLevels.name,
+        sectionName: sections.name,
+      })
+      .from(students)
+      .leftJoin(gradeLevels, eq(students.gradeLevelId, gradeLevels.id))
+      .leftJoin(sections, eq(students.sectionId, sections.id))
+      .where(and(eq(students.schoolId, schoolId), eq(students.isActive, true)));
+
+    const rows = await db
+      .select({
+        studentId: dailyAttendances.studentId,
+        status: dailyAttendances.status,
+        date: dailyAttendances.date,
+      })
+      .from(dailyAttendances)
+      .where(
+        and(
+          eq(dailyAttendances.schoolId, schoolId),
+          gte(dailyAttendances.date, startIso),
+          lte(dailyAttendances.date, endIso),
+        ),
+      );
+    const holidayDates = await this.getHolidayDatesInRange(schoolId, startIso, endIso);
+
+    const byStudent = new Map<number, Array<{ status: string; date: string }>>();
+    for (const row of rows) {
+      const normalizedDate = new Date(String(row.date)).toISOString().slice(0, 10);
+      if (holidayDates.has(normalizedDate)) continue;
+      const item = {
+        status: row.status,
+        date: normalizedDate,
+      };
+      const list = byStudent.get(row.studentId) || [];
+      list.push(item);
+      byStudent.set(row.studentId, list);
+    }
+
+    const scoreMap: Record<string, number> = {
+      present: 100,
+      late: 70,
+      pending_checkout: 60,
+      absent: 20,
+    };
+
+    const studentInsights = roster.map((student) => {
+      const history = byStudent.get(student.id) || [];
+      const counts = {
+        present: 0,
+        late: 0,
+        pendingCheckout: 0,
+        absent: 0,
+      };
+
+      let score = 100;
+      for (const h of history) {
+        if (h.status === "late") counts.late++;
+        else if (h.status === "absent") counts.absent++;
+        else if (h.status === "pending_checkout") counts.pendingCheckout++;
+        else if (h.status === "present") counts.present++;
+
+        if (h.status === "late") score -= 6;
+        else if (h.status === "absent") score -= 12;
+        else if (h.status === "pending_checkout") score -= 8;
+      }
+      score = Math.max(0, Math.min(100, score));
+
+      const recentRows = history.filter((h) => h.date >= splitIso);
+      const previousRows = history.filter((h) => h.date < splitIso);
+      const avg = (arr: Array<{ status: string }>) =>
+        arr.length === 0
+          ? 0
+          : Math.round(
+              arr.reduce((sum, a) => sum + (scoreMap[a.status] ?? 50), 0) / arr.length,
+            );
+      const recentScore = avg(recentRows);
+      const previousScore = avg(previousRows);
+      const delta = recentScore - previousScore;
+      const trend =
+        previousRows.length === 0
+          ? "stable"
+          : delta >= 8
+            ? "improving"
+            : delta <= -8
+              ? "declining"
+              : "stable";
+
+      const riskFlags: string[] = [];
+      if (counts.absent >= 3) riskFlags.push("chronic_absent");
+      if (counts.late >= 4) riskFlags.push("frequent_late");
+      if (counts.pendingCheckout >= 3) riskFlags.push("missing_checkout_pattern");
+      if (score < 70) riskFlags.push("low_attendance_score");
+
+      return {
+        studentId: student.id,
+        studentNo: student.studentNo,
+        studentName: `${student.firstName} ${student.lastName}`,
+        gradeLevel: student.gradeLevelName || "Unassigned",
+        section: student.sectionName || "Unassigned",
+        score,
+        trend,
+        counts,
+        riskFlags,
+      };
+    });
+
+    const atRiskStudents = studentInsights
+      .filter((s) => s.riskFlags.length > 0 || s.trend === "declining")
+      .sort((a, b) => {
+        const aRisk = a.riskFlags.length + (a.trend === "declining" ? 1 : 0);
+        const bRisk = b.riskFlags.length + (b.trend === "declining" ? 1 : 0);
+        if (bRisk !== aRisk) return bRisk - aRisk;
+        return a.score - b.score;
+      })
+      .slice(0, 15);
+
+    const classAgg = new Map<string, { gradeLevel: string; section: string; total: number; avgScore: number; atRiskCount: number }>();
+    const gradeAgg = new Map<string, { gradeLevel: string; total: number; avgScore: number; atRiskCount: number }>();
+
+    for (const s of studentInsights) {
+      const classKey = `${s.gradeLevel}|${s.section}`;
+      const classRow = classAgg.get(classKey) || {
+        gradeLevel: s.gradeLevel,
+        section: s.section,
+        total: 0,
+        avgScore: 0,
+        atRiskCount: 0,
+      };
+      classRow.total++;
+      classRow.avgScore += s.score;
+      if (s.riskFlags.length > 0 || s.trend === "declining") classRow.atRiskCount++;
+      classAgg.set(classKey, classRow);
+
+      const gradeRow = gradeAgg.get(s.gradeLevel) || {
+        gradeLevel: s.gradeLevel,
+        total: 0,
+        avgScore: 0,
+        atRiskCount: 0,
+      };
+      gradeRow.total++;
+      gradeRow.avgScore += s.score;
+      if (s.riskFlags.length > 0 || s.trend === "declining") gradeRow.atRiskCount++;
+      gradeAgg.set(s.gradeLevel, gradeRow);
+    }
+
+    const classInsights = Array.from(classAgg.values()).map((r) => ({
+      ...r,
+      avgScore: r.total > 0 ? Math.round(r.avgScore / r.total) : 0,
+    }));
+    const gradeInsights = Array.from(gradeAgg.values()).map((r) => ({
+      ...r,
+      avgScore: r.total > 0 ? Math.round(r.avgScore / r.total) : 0,
+    }));
+
+    return {
+      window: { startDate: startIso, endDate: endIso },
+      summary: {
+        totalStudents: studentInsights.length,
+        atRiskCount: atRiskStudents.length,
+      },
+      atRiskStudents,
+      classInsights,
+      gradeInsights,
+    };
+  }
+
   async getAttendanceReport(schoolId: number, startDate: string, endDate: string, gradeId?: number, sectionId?: number): Promise<any[]> {
     const conditions: any[] = [
       eq(dailyAttendances.schoolId, schoolId),
@@ -607,9 +912,9 @@ export class DatabaseStorage implements IStorage {
     if (gradeId) conditions.push(eq(students.gradeLevelId, gradeId));
     if (sectionId) conditions.push(eq(students.sectionId, sectionId));
 
-    return db
+    const records = await db
       .select({
-        studentName: sql<string>`${students.firstName} || ' ' || ${students.lastName}`,
+        studentName: sql<string>`CONCAT(${students.firstName}, ' ', ${students.lastName})`,
         studentNo: students.studentNo,
         gradeLevel: gradeLevels.name,
         section: sections.name,
@@ -624,16 +929,19 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(sections, eq(students.sectionId, sections.id))
       .where(and(...conditions))
       .orderBy(desc(dailyAttendances.date));
+
+    const holidayDates = await this.getHolidayDatesInRange(schoolId, startDate, endDate);
+    return records.filter((r: any) => !holidayDates.has(String(r.date)));
   }
 
   async getSmsUsageReport(schoolId: number, startDate: string, endDate: string): Promise<any[]> {
     return db
       .select({
-        date: sql<string>`DATE(${smsLogs.createdAt})::text`,
-        total: sql<number>`count(*)::int`,
-        sent: sql<number>`count(*) FILTER (WHERE ${smsLogs.status} = 'sent')::int`,
-        failed: sql<number>`count(*) FILTER (WHERE ${smsLogs.status} = 'failed')::int`,
-        queued: sql<number>`count(*) FILTER (WHERE ${smsLogs.status} = 'queued')::int`,
+        date: sql<string>`DATE(${smsLogs.createdAt})`,
+        total: sql<number>`count(*)`,
+        sent: sql<number>`sum(case when ${smsLogs.status} = 'sent' then 1 else 0 end)`,
+        failed: sql<number>`sum(case when ${smsLogs.status} = 'failed' then 1 else 0 end)`,
+        queued: sql<number>`sum(case when ${smsLogs.status} = 'queued' then 1 else 0 end)`,
       })
       .from(smsLogs)
       .where(
@@ -651,7 +959,7 @@ export class DatabaseStorage implements IStorage {
     const existingSchools = await db.select().from(schools);
     if (existingSchools.length > 0) return;
 
-    const [school] = await db.insert(schools).values({
+    const [{ id: schoolId }] = await db.insert(schools).values({
       name: "Stars Educational Center Inc.",
       timezone: "Asia/Manila",
       lateTime: "08:00:00",
@@ -659,7 +967,8 @@ export class DatabaseStorage implements IStorage {
       smsEnabled: false,
       allowMultipleScans: false,
       smsProvider: "semaphore",
-    }).returning();
+    }).$returningId();
+    const [school] = await db.select().from(schools).where(eq(schools.id, schoolId));
 
     const hashPw = await bcrypt.hash("password", 10);
 
@@ -673,7 +982,8 @@ export class DatabaseStorage implements IStorage {
     const gradeNames = ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6"];
     const createdGrades: GradeLevel[] = [];
     for (const name of gradeNames) {
-      const [gl] = await db.insert(gradeLevels).values({ schoolId: school.id, name }).returning();
+      const [{ id: gradeId }] = await db.insert(gradeLevels).values({ schoolId: school.id, name }).$returningId();
+      const [gl] = await db.select().from(gradeLevels).where(eq(gradeLevels.id, gradeId));
       createdGrades.push(gl);
     }
 
@@ -681,11 +991,12 @@ export class DatabaseStorage implements IStorage {
     const createdSections: Section[] = [];
     for (const gl of createdGrades.slice(0, 3)) {
       for (const sName of sectionNames) {
-        const [sec] = await db.insert(sections).values({
+        const [{ id: sectionId }] = await db.insert(sections).values({
           schoolId: school.id,
           gradeLevelId: gl.id,
           name: sName,
-        }).returning();
+        }).$returningId();
+        const [sec] = await db.select().from(sections).where(eq(sections.id, sectionId));
         createdSections.push(sec);
       }
     }
@@ -698,11 +1009,11 @@ export class DatabaseStorage implements IStorage {
       });
     }
 
-    const [kiosk] = await db.insert(kioskLocations).values({
+    await db.insert(kioskLocations).values({
       schoolId: school.id,
       name: "Main Gate",
       slug: "main-gate",
-    }).returning();
+    });
 
     const firstNames = [
       "Juan", "Maria", "Carlos", "Ana", "Pedro", "Sofia", "Miguel", "Isabella",
@@ -740,18 +1051,11 @@ export class DatabaseStorage implements IStorage {
       });
     }
 
-    const templateDefaults = [
-      { type: "check_in", text: "[{school_name}] {student_name} checked in at {time} on {date}." },
-      { type: "check_out", text: "[{school_name}] {student_name} checked out at {time} on {date}." },
-      { type: "late", text: "[{school_name}] {student_name} arrived late at {time} on {date}." },
-      { type: "absent", text: "[{school_name}] {student_name} was marked absent on {date}." },
-    ];
-
-    for (const t of templateDefaults) {
+    for (const t of DEFAULT_SMS_TEMPLATES) {
       await db.insert(smsTemplates).values({
         schoolId: school.id,
         type: t.type,
-        enabled: true,
+        enabled: t.enabled,
         templateText: t.text,
       });
     }

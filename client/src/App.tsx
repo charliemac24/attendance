@@ -18,7 +18,9 @@ import SectionsPage from "@/pages/sections";
 import KiosksPage from "@/pages/kiosks";
 import GateKiosksPage from "@/pages/gate-kiosks";
 import SettingsSchoolPage from "@/pages/settings-school";
+import SettingsHolidaysPage from "@/pages/settings-holidays";
 import SmsTemplatesPage from "@/pages/settings-sms-templates";
+import SettingsSmsPoliciesPage from "@/pages/settings-sms-policies";
 import SmsLogsPage from "@/pages/sms-logs";
 import SchoolsPage from "@/pages/schools";
 import ReportsPage from "@/pages/reports";
@@ -60,6 +62,16 @@ function AuthenticatedLayout() {
               {user.role.replace(/_/g, " ")}
             </span>
           </header>
+          {user.role === "super_admin" && (
+            <div className="border-b bg-muted/30 px-4 py-2">
+              <p className="text-sm text-muted-foreground" data-testid="text-active-school-indicator">
+                Viewing records for:{" "}
+                <span className="font-medium text-foreground">
+                  {user.school?.name || "No school selected"}
+                </span>
+              </p>
+            </div>
+          )}
           <main className="flex-1 overflow-auto">
             <Switch>
               <Route path="/" component={DashboardPage} />
@@ -71,7 +83,9 @@ function AuthenticatedLayout() {
               <Route path="/kiosks" component={KiosksPage} />
               <Route path="/gate/kiosks" component={GateKiosksPage} />
               <Route path="/settings/school" component={SettingsSchoolPage} />
+              <Route path="/settings/holidays" component={SettingsHolidaysPage} />
               <Route path="/settings/sms-templates" component={SmsTemplatesPage} />
+              <Route path="/settings/sms-policies" component={SettingsSmsPoliciesPage} />
               <Route path="/sms-logs" component={SmsLogsPage} />
               <Route path="/schools" component={SchoolsPage} />
               <Route path="/users" component={UsersPage} />

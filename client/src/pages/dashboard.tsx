@@ -43,6 +43,21 @@ interface DashboardData {
   }>;
 }
 
+interface AttendanceIntelligenceData {
+  window: { startDate: string; endDate: string };
+  summary: { totalStudents: number; atRiskCount: number };
+  atRiskStudents: Array<{
+    studentId: number;
+    studentNo: string;
+    studentName: string;
+    gradeLevel: string;
+    section: string;
+    score: number;
+    trend: "improving" | "stable" | "declining";
+    riskFlags: string[];
+  }>;
+}
+
 export default function DashboardPage() {
   const [selectedDate, setSelectedDate] = useState(
     new Date().toISOString().split("T")[0]
@@ -51,6 +66,16 @@ export default function DashboardPage() {
   const { data, isLoading } = useQuery<DashboardData>({
     queryKey: [`/api/dashboard?date=${selectedDate}`],
   });
+  const { data: intelligence, isLoading: isIntelligenceLoading } = useQuery<AttendanceIntelligenceData>({
+    queryKey: [`/api/attendance-intelligence?date=${selectedDate}`],
+  });
+
+  const riskFlagLabel: Record<string, string> = {
+    chronic_absent: "Chronic absent",
+    frequent_late: "Frequent late",
+    missing_checkout_pattern: "Missing check-out",
+    low_attendance_score: "Low score",
+  };
 
   const kpiCards = [
     {
@@ -168,6 +193,61 @@ export default function DashboardPage() {
           Total active students: <span className="font-medium text-foreground">{data.kpis.total}</span>
         </div>
       )}
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
+          <h3 className="text-sm font-semibold">At-Risk Students</h3>
+          <Badge variant="secondary" className="no-default-hover-elevate no-default-active-elevate">
+            {intelligence?.summary.atRiskCount ?? 0}
+          </Badge>
+        </CardHeader>
+        <CardContent>
+          {isIntelligenceLoading ? (
+            <Skeleton className="h-40 w-full" />
+          ) : intelligence?.atRiskStudents && intelligence.atRiskStudents.length > 0 ? (
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {intelligence.atRiskStudents.slice(0, 9).map((s) => (
+                <div key={s.studentId} className="border rounded-md p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{s.studentName}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {s.studentNo} • {s.gradeLevel} / {s.section}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-semibold">Score {s.score}</p>
+                      <Badge
+                        variant={
+                          s.trend === "declining"
+                            ? "destructive"
+                            : s.trend === "improving"
+                              ? "default"
+                              : "secondary"
+                        }
+                        className="text-[10px] mt-1 no-default-hover-elevate no-default-active-elevate"
+                      >
+                        {s.trend}
+                      </Badge>
+                    </div>
+                  </div>
+                  {s.riskFlags.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {s.riskFlags.slice(0, 3).map((flag) => (
+                        <Badge key={flag} variant="outline" className="text-[10px]">
+                          {riskFlagLabel[flag] || flag}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-muted-foreground text-sm py-4 text-center">No at-risk students in selected window</p>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid lg:grid-cols-2 gap-6">
         <Card>

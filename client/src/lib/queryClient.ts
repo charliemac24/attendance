@@ -1,9 +1,29 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
+function parseErrorMessage(status: number, statusText: string, raw: string): string {
+  const text = (raw || "").trim();
+  if (!text) return `${status} ${statusText}`.trim();
+
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed?.message === "string" && parsed.message.trim()) {
+      return parsed.message.trim();
+    }
+    if (typeof parsed?.error === "string" && parsed.error.trim()) {
+      return parsed.error.trim();
+    }
+  } catch {
+    // Not JSON, fall through to text handling.
+  }
+
+  return text;
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    const raw = await res.text();
+    const message = parseErrorMessage(res.status, res.statusText, raw);
+    throw new Error(message);
   }
 }
 

@@ -30,6 +30,8 @@ export default function SchoolsPage() {
     smsProvider: "semaphore",
     semaphoreApiKey: "",
     semaphoreSenderName: "",
+    monthlySmsCredits: 0,
+    smsOverageRateCents: 150,
     adminUsername: "",
     adminPassword: "",
     adminFullName: "",
@@ -52,6 +54,8 @@ export default function SchoolsPage() {
         smsProvider: formData.smsProvider,
         semaphoreApiKey: formData.semaphoreApiKey,
         semaphoreSenderName: formData.semaphoreSenderName,
+        monthlySmsCredits: formData.monthlySmsCredits,
+        smsOverageRateCents: formData.smsOverageRateCents,
       };
 
       if (!editing) {
@@ -102,6 +106,8 @@ export default function SchoolsPage() {
       smsProvider: "semaphore",
       semaphoreApiKey: "",
       semaphoreSenderName: "",
+      monthlySmsCredits: 0,
+      smsOverageRateCents: 150,
       adminUsername: "",
       adminPassword: "",
       adminFullName: "",
@@ -122,6 +128,8 @@ export default function SchoolsPage() {
       smsProvider: school.smsProvider,
       semaphoreApiKey: school.semaphoreApiKey || "",
       semaphoreSenderName: school.semaphoreSenderName || "",
+      monthlySmsCredits: school.monthlySmsCredits ?? 0,
+      smsOverageRateCents: school.smsOverageRateCents ?? 150,
       adminUsername: "",
       adminPassword: "",
       adminFullName: "",
@@ -171,6 +179,9 @@ export default function SchoolsPage() {
                     <p className="font-medium">{school.name}</p>
                     <p className="text-xs text-muted-foreground">
                       {school.timezone} | Late: {school.lateTime} | Cutoff: {school.cutoffTime}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Monthly Credits: {school.monthlySmsCredits} | Overage: PHP {(school.smsOverageRateCents / 100).toFixed(2)}/SMS
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -336,6 +347,28 @@ export default function SchoolsPage() {
                 onChange={(e) => setFormData({ ...formData, semaphoreSenderName: e.target.value })}
                 data-testid="input-semaphore-sender"
               />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Monthly SMS Credits</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={formData.monthlySmsCredits}
+                  onChange={(e) => setFormData({ ...formData, monthlySmsCredits: Number(e.target.value) })}
+                  data-testid="input-monthly-sms-credits"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Overage Rate (centavos/SMS)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={formData.smsOverageRateCents}
+                  onChange={(e) => setFormData({ ...formData, smsOverageRateCents: Number(e.target.value) })}
+                  data-testid="input-overage-rate-cents"
+                />
+              </div>
             </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>

@@ -36,9 +36,22 @@ export default function SmsTemplatesPage() {
   const typeLabels: Record<string, string> = {
     check_in: "Check-in",
     check_out: "Check-out",
+    out_final: "Final Dismissal Out",
+    break_out: "Break Out",
+    break_in: "Break In",
+    early_out: "Early Out",
     late: "Late Arrival",
     absent: "Absent",
   };
+
+  const typeOrder = ["check_in", "check_out", "out_final", "break_out", "break_in", "early_out", "late", "absent"];
+  const sortedTemplates = [...(templates || [])].sort((a, b) => {
+    const ai = typeOrder.indexOf(a.type);
+    const bi = typeOrder.indexOf(b.type);
+    const ax = ai === -1 ? 999 : ai;
+    const bx = bi === -1 ? 999 : bi;
+    return ax - bx;
+  });
 
   return (
     <div className="p-6 space-y-6 max-w-3xl mx-auto">
@@ -63,7 +76,7 @@ export default function SmsTemplatesPage() {
           ))}
         </div>
       ) : (
-        templates?.map((template) => (
+        sortedTemplates.map((template) => (
           <TemplateCard
             key={template.id}
             template={template}

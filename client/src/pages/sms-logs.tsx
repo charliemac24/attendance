@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MessageSquare } from "lucide-react";
@@ -13,7 +13,7 @@ export default function SmsLogsPage() {
   });
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+    <div className="p-6 space-y-6 max-w-6xl mx-auto">
       <div className="flex items-center gap-3">
         <div className="p-2 rounded-md bg-primary/10">
           <MessageSquare className="h-5 w-5 text-primary" />
@@ -39,22 +39,17 @@ export default function SmsLogsPage() {
                     <th className="text-left py-3 px-4 font-medium">To</th>
                     <th className="text-left py-3 px-4 font-medium">Message</th>
                     <th className="text-left py-3 px-4 font-medium">Status</th>
+                    <th className="text-left py-3 px-4 font-medium">Details</th>
                     <th className="text-left py-3 px-4 font-medium">Sent</th>
                   </tr>
                 </thead>
                 <tbody>
                   {logs.map((log) => (
                     <tr key={log.id} className="border-b last:border-0">
-                      <td className="py-3 px-4 font-medium">
-                        {log.studentName || "—"}
-                      </td>
-                      <td className="py-3 px-4 text-muted-foreground">
-                        {log.templateType || "—"}
-                      </td>
+                      <td className="py-3 px-4 font-medium">{log.studentName || "-"}</td>
+                      <td className="py-3 px-4 text-muted-foreground">{log.templateType || "-"}</td>
                       <td className="py-3 px-4 text-muted-foreground">{log.toPhone}</td>
-                      <td className="py-3 px-4 text-muted-foreground max-w-xs truncate">
-                        {log.message}
-                      </td>
+                      <td className="py-3 px-4 text-muted-foreground max-w-xs truncate">{log.message}</td>
                       <td className="py-3 px-4">
                         <Badge
                           variant={
@@ -69,10 +64,16 @@ export default function SmsLogsPage() {
                           {log.status}
                         </Badge>
                       </td>
+                      <td className="py-3 px-4 text-muted-foreground text-xs max-w-sm">
+                        <span className="line-clamp-2">
+                          {log.errorMessage ||
+                            (log.providerResponse
+                              ? JSON.stringify(log.providerResponse)
+                              : "-")}
+                        </span>
+                      </td>
                       <td className="py-3 px-4 text-muted-foreground text-xs">
-                        {log.createdAt
-                          ? new Date(log.createdAt).toLocaleString()
-                          : "—"}
+                        {log.createdAt ? new Date(log.createdAt).toLocaleString() : "-"}
                       </td>
                     </tr>
                   ))}

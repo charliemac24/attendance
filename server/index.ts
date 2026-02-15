@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
@@ -5,6 +6,10 @@ import { createServer } from "http";
 
 const app = express();
 const httpServer = createServer(app);
+
+// Required when running behind reverse proxies (e.g., cPanel/Passenger)
+// so secure cookies and client IP/protocol are handled correctly.
+app.set("trust proxy", 1);
 
 declare module "http" {
   interface IncomingMessage {

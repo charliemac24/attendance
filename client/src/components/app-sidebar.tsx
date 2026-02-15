@@ -8,6 +8,7 @@ import {
   ClipboardList,
   FileText,
   Settings,
+  Calendar,
   MessageSquare,
   LogOut,
   School,
@@ -33,10 +34,17 @@ import {
 } from "@/components/ui/sidebar";
 import { useAuth, hasRole } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 
 export function AppSidebar() {
   const [location] = useLocation();
   const { user, logout } = useAuth();
+  const initials = (user?.fullName || "User")
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || "")
+    .join("");
 
   const mainItems = [
     { title: "Dashboard", url: "/", icon: LayoutDashboard },
@@ -67,10 +75,13 @@ export function AppSidebar() {
     { title: "Daily Report", url: "/reports/daily", icon: ClipboardList },
     { title: "Absentees", url: "/reports/absentees", icon: FileText },
     { title: "SMS Usage", url: "/reports/sms-usage", icon: MessageSquare },
+    ...(user?.role === "super_admin" ? [{ title: "SMS Billing", url: "/reports/sms-billing", icon: MessageSquare }] : []),
   ];
 
   const settingsItems = [
     { title: "School Settings", url: "/settings/school", icon: Settings },
+    { title: "SMS Policies", url: "/settings/sms-policies", icon: MessageSquare },
+    { title: "Holidays", url: "/settings/holidays", icon: Calendar },
     { title: "SMS Templates", url: "/settings/sms-templates", icon: MessageSquare },
     { title: "SMS Logs", url: "/sms-logs", icon: MessageSquare },
   ];
@@ -88,9 +99,11 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarHeader className="p-4">
         <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground text-sm font-bold">
-            M
-          </div>
+          <Avatar className="h-9 w-9" data-testid="avatar-app-logo">
+            <AvatarFallback className="bg-primary/15 text-primary font-semibold">
+              {initials || "U"}
+            </AvatarFallback>
+          </Avatar>
           <div className="min-w-0">
             <h2 className="text-sm font-semibold" data-testid="text-app-title">MYO Attendance</h2>
             <p className="text-xs text-muted-foreground truncate">{user?.fullName}</p>

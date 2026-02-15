@@ -1,4 +1,4 @@
-import type { Express, Request, Response, NextFunction } from "express";
+import express, { type Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import session from "express-session";
@@ -6,9 +6,18 @@ import bcrypt from "bcryptjs";
 import { randomBytes } from "crypto";
 import multer from "multer";
 import createMemoryStore from "memorystore";
+import fs from "fs";
+import path from "path";
+import { and, desc, eq, sql } from "drizzle-orm";
+import { db } from "./db";
+import { attendanceEvents, gradeLevels, gradeSmsPolicies, schools, sectionSmsPolicies, sections, smsLogs } from "@shared/schema";
 
 const MemoryStore = createMemoryStore(session);
 const upload = multer({ storage: multer.memoryStorage() });
+const photoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
 
 declare module "express-session" {
   interface SessionData {
@@ -67,17 +76,420 @@ function normalizePhone(phone: string): string {
   return digits;
 }
 
+function renderSmsTemplate(template: string, variables: Record<string, string>): string {
+  return template.replace(/\{([a-z_]+)\}/gi, (_m, token) => {
+    const key = String(token).toLowerCase();
+    return variables[key] ?? "";
+  });
+}
+
+function hasNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+async function sendSemaphoreMessage(apiKey: string, senderName: string | null, toPhone: string, message: string) {
+  const form = new URLSearchParams();
+  form.set("apikey", apiKey);
+  form.set("number", toPhone);
+  form.set("message", message);
+  if (senderName) {
+    form.set("sendername", senderName);
+  }
+
+  const response = await fetch("https://api.semaphore.co/api/v4/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form.toString(),
+  });
+
+  const rawText = await response.text();
+  let parsed: any = null;
+  try {
+    parsed = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    parsed = rawText;
+  }
+
+  if (!response.ok) {
+    const err = new Error(`Semaphore request failed (${response.status})`);
+    (err as any).providerResponse = parsed;
+    throw err;
+  }
+
+  const failureReason = getSemaphoreFailureReason(parsed);
+  if (failureReason) {
+    const err = new Error(`Semaphore rejected message: ${failureReason}`);
+    (err as any).providerResponse = parsed;
+    throw err;
+  }
+
+  return parsed;
+}
+
+function getSemaphoreMessageId(providerResponse: any): string | null {
+  const first = Array.isArray(providerResponse) ? providerResponse[0] : providerResponse;
+  return first?.message_id || first?.id || null;
+}
+
+function getSemaphoreFailureReason(providerResponse: any): string | null {
+  if (!providerResponse) return "Empty response from Semaphore";
+  if (typeof providerResponse === "string") {
+    const s = providerResponse.toLowerCase();
+    if (s.includes("error") || s.includes("invalid") || s.includes("failed") || s.includes("unauthorized")) {
+      return providerResponse;
+    }
+    return null;
+  }
+
+  const first = Array.isArray(providerResponse) ? providerResponse[0] : providerResponse;
+  if (!first) return "Empty response payload from Semaphore";
+
+  if (typeof first.error === "string" && first.error.trim()) return first.error;
+  if (typeof first.message === "string" && /invalid|unauthorized|failed|reject/i.test(first.message)) {
+    return first.message;
+  }
+
+  const providerStatus = String(first.status ?? "");
+  if (providerStatus && /failed|reject|invalid|error|undeliver/i.test(providerStatus)) {
+    return `Provider status: ${providerStatus}`;
+  }
+
+  return null;
+}
+
+async function createSkippedSmsLog(params: {
+  schoolId: number;
+  studentId: number | null;
+  templateType:
+    | "check_in"
+    | "check_out"
+    | "out_final"
+    | "break_out"
+    | "break_in"
+    | "early_out"
+    | "late"
+    | "absent";
+  toPhone?: string | null;
+  message?: string;
+  reason: string;
+}) {
+  await storage.createSmsLog({
+    schoolId: params.schoolId,
+    studentId: params.studentId,
+    templateType: params.templateType,
+    toPhone: hasNonEmptyString(params.toPhone) ? normalizePhone(params.toPhone) : "N/A",
+    message: params.message ?? "",
+    status: "skipped",
+    providerMessageId: null,
+    providerResponse: null,
+    sentAt: null,
+    errorMessage: params.reason,
+  });
+  console.warn("SMS skipped", {
+    schoolId: params.schoolId,
+    studentId: params.studentId,
+    templateType: params.templateType,
+    toPhone: params.toPhone ?? null,
+    reason: params.reason,
+  });
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
+function isAfterDismissalWindow(now: Date, dismissalTime: string, earlyOutWindowMinutes: number): boolean {
+  const [hourStr, minuteStr] = dismissalTime.split(":");
+  const dismissalMinutes = (Number(hourStr) * 60) + Number(minuteStr);
+  const nowMinutes = (now.getHours() * 60) + now.getMinutes();
+  return nowMinutes >= dismissalMinutes - earlyOutWindowMinutes;
+}
+
+async function getEffectiveSmsDailyCap(params: {
+  schoolId: number;
+  gradeLevelId: number | null;
+  sectionId: number | null;
+  schoolCap: number;
+}): Promise<number> {
+  const baseCap = clampNumber(params.schoolCap, 1, 20, 2);
+
+  if (params.sectionId) {
+    const [sectionPolicy] = await db
+      .select()
+      .from(sectionSmsPolicies)
+      .where(
+        and(
+          eq(sectionSmsPolicies.schoolId, params.schoolId),
+          eq(sectionSmsPolicies.sectionId, params.sectionId),
+          eq(sectionSmsPolicies.enabled, true),
+        ),
+      )
+      .limit(1);
+    if (sectionPolicy) return clampNumber(sectionPolicy.dailyCap, 1, 20, baseCap);
+  }
+
+  if (params.gradeLevelId) {
+    const [gradePolicy] = await db
+      .select()
+      .from(gradeSmsPolicies)
+      .where(
+        and(
+          eq(gradeSmsPolicies.schoolId, params.schoolId),
+          eq(gradeSmsPolicies.gradeLevelId, params.gradeLevelId),
+          eq(gradeSmsPolicies.enabled, true),
+        ),
+      )
+      .limit(1);
+    if (gradePolicy) return clampNumber(gradePolicy.dailyCap, 1, 20, baseCap);
+  }
+
+  return baseCap;
+}
+
+async function getStudentSmsSentCountForDate(schoolId: number, studentId: number, dateIso: string): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(smsLogs)
+    .where(
+      and(
+        eq(smsLogs.schoolId, schoolId),
+        eq(smsLogs.studentId, studentId),
+        sql`DATE(${smsLogs.createdAt}) = ${dateIso}`,
+        sql`${smsLogs.status} IN ('sent', 'queued')`,
+      ),
+    );
+
+  return Number(row?.count || 0);
+}
+
+async function getLastEventForAttendance(dailyAttendanceId: number) {
+  const [event] = await db
+    .select({
+      eventType: attendanceEvents.eventType,
+      occurredAt: attendanceEvents.occurredAt,
+    })
+    .from(attendanceEvents)
+    .where(eq(attendanceEvents.dailyAttendanceId, dailyAttendanceId))
+    .orderBy(desc(attendanceEvents.occurredAt))
+    .limit(1);
+
+  return event;
+}
+
+async function getBreakOutCount(dailyAttendanceId: number): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(attendanceEvents)
+    .where(
+      and(
+        eq(attendanceEvents.dailyAttendanceId, dailyAttendanceId),
+        eq(attendanceEvents.eventType, "break_out"),
+      ),
+    );
+  return Number(row?.count || 0);
+}
+
+async function maybeSendAttendanceSms(args: {
+  school: any;
+  student: any;
+  templateType:
+    | "check_in"
+    | "check_out"
+    | "out_final"
+    | "break_out"
+    | "break_in"
+    | "early_out"
+    | "late"
+    | "absent";
+  eventTime: Date;
+  status: string;
+}) {
+  const { school, student, templateType, eventTime, status } = args;
+  if (!school?.id || !student?.id) return;
+  if (!school.smsEnabled) {
+    await createSkippedSmsLog({
+      schoolId: school.id,
+      studentId: student.id,
+      templateType,
+      toPhone: student?.guardianPhone ?? null,
+      reason: "SMS is disabled in school settings",
+    });
+    return;
+  }
+
+  if (school.smsProvider !== "semaphore") {
+    await createSkippedSmsLog({
+      schoolId: school.id,
+      studentId: student.id,
+      templateType,
+      toPhone: student?.guardianPhone ?? null,
+      reason: `Unsupported SMS provider: ${school.smsProvider}`,
+    });
+    return;
+  }
+
+  if (!hasNonEmptyString(school.semaphoreApiKey)) {
+    await createSkippedSmsLog({
+      schoolId: school.id,
+      studentId: student.id,
+      templateType,
+      toPhone: student?.guardianPhone ?? null,
+      reason: "Missing Semaphore API key",
+    });
+    return;
+  }
+
+  if (!hasNonEmptyString(student?.guardianPhone)) {
+    await createSkippedSmsLog({
+      schoolId: school.id,
+      studentId: student.id,
+      templateType,
+      reason: "Student guardian phone is empty",
+    });
+    return;
+  }
+
+  const sendMode = (school.smsSendMode || "FIRST_IN_LAST_OUT").toUpperCase();
+  const shouldSendByMode =
+    sendMode === "ALL_MOVEMENTS"
+      ? true
+      : sendMode === "EXCEPTIONS_ONLY"
+        ? templateType === "late" || templateType === "absent" || templateType === "early_out"
+        : templateType === "check_in" || templateType === "check_out" || templateType === "out_final";
+
+  if (!shouldSendByMode) {
+    await createSkippedSmsLog({
+      schoolId: school.id,
+      studentId: student.id,
+      templateType,
+      toPhone: student.guardianPhone,
+      reason: `SMS mode ${sendMode} skipped ${templateType}`,
+    });
+    return;
+  }
+
+  const today = eventTime.toISOString().slice(0, 10);
+  const effectiveCap = await getEffectiveSmsDailyCap({
+    schoolId: school.id,
+    gradeLevelId: student.gradeLevelId ?? null,
+    sectionId: student.sectionId ?? null,
+    schoolCap: school.smsDailyCap,
+  });
+  const usedCount = await getStudentSmsSentCountForDate(school.id, student.id, today);
+  if (usedCount >= effectiveCap) {
+    await createSkippedSmsLog({
+      schoolId: school.id,
+      studentId: student.id,
+      templateType,
+      toPhone: student.guardianPhone,
+      reason: `Daily SMS cap reached (${usedCount}/${effectiveCap})`,
+    });
+    return;
+  }
+
+  const templates = await storage.getSmsTemplates(school.id);
+  let selectedTemplateType = templateType;
+  let template = templates.find((t) => t.type === selectedTemplateType && t.enabled);
+  if (!template && templateType === "out_final") {
+    selectedTemplateType = "check_out";
+    template = templates.find((t) => t.type === "check_out" && t.enabled);
+  }
+  if (!template) {
+    await createSkippedSmsLog({
+      schoolId: school.id,
+      studentId: student.id,
+      templateType,
+      toPhone: student.guardianPhone,
+      reason: `No enabled template for type: ${templateType}`,
+    });
+    return;
+  }
+
+  const studentName = `${student.firstName} ${student.lastName}`.trim();
+  const toPhone = normalizePhone(student.guardianPhone);
+  const message = renderSmsTemplate(template.templateText, {
+    school_name: school.name ?? "",
+    student_name: studentName,
+    grade_level: "",
+    section: "",
+    date: eventTime.toISOString().slice(0, 10),
+    time: eventTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    status,
+  });
+
+  try {
+    const providerResponse = await sendSemaphoreMessage(
+      school.semaphoreApiKey,
+      school.semaphoreSenderName || null,
+      toPhone,
+      message,
+    );
+    const providerMessageId = getSemaphoreMessageId(providerResponse);
+
+    await storage.createSmsLog({
+      schoolId: school.id,
+      studentId: student.id,
+      templateType: selectedTemplateType,
+      toPhone,
+      message,
+      status: "sent",
+      providerMessageId,
+      providerResponse,
+      sentAt: new Date(),
+      errorMessage: null,
+    });
+  } catch (err: any) {
+    await storage.createSmsLog({
+      schoolId: school.id,
+      studentId: student.id,
+      templateType: selectedTemplateType,
+      toPhone,
+      message,
+      status: "failed",
+      providerMessageId: null,
+      providerResponse: err?.providerResponse ?? null,
+      sentAt: null,
+      errorMessage: err?.message || "Failed to send SMS",
+    });
+    console.error("SMS send failed", {
+      schoolId: school.id,
+      studentId: student.id,
+      templateType,
+      toPhone,
+      error: err?.message || String(err),
+      providerResponse: err?.providerResponse ?? null,
+    });
+  }
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  const sessionMaxAgeMs = Number(process.env.SESSION_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000);
+
+  const uploadsRoot = path.resolve(process.cwd(), "uploads");
+  const studentPhotoDir = path.join(uploadsRoot, "students");
+  fs.mkdirSync(studentPhotoDir, { recursive: true });
+  app.use("/uploads", express.static(uploadsRoot));
+
   app.use(
     session({
       secret: process.env.SESSION_SECRET || "myo-attendance-secret-key",
+      name: "myo_attendance_sid",
+      proxy: true,
       resave: false,
       saveUninitialized: false,
-      store: new MemoryStore({ checkPeriod: 86400000 }),
-      cookie: { maxAge: 24 * 60 * 60 * 1000 },
+      rolling: true,
+      store: new MemoryStore({ checkPeriod: 86400000, ttl: sessionMaxAgeMs }),
+      cookie: {
+        maxAge: sessionMaxAgeMs,
+        httpOnly: true,
+        sameSite: "lax",
+        secure: "auto",
+      },
     })
   );
 
@@ -121,9 +533,12 @@ export async function registerRoutes(
   });
 
   app.get("/api/auth/me", async (req, res) => {
-    if (!req.session.userId) return res.status(401).json({ message: "Not authenticated" });
+    if (!req.session.userId) return res.json(null);
     const user = await storage.getUserById(req.session.userId);
-    if (!user) return res.status(401).json({ message: "User not found" });
+    if (!user) {
+      req.session.destroy(() => {});
+      return res.json(null);
+    }
 
     let school = user.schoolId ? await storage.getSchool(user.schoolId) : null;
     let selectedSchoolId = user.schoolId;
@@ -298,6 +713,27 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/attendance-intelligence", requireAuth, async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) {
+        return res.json({
+          window: { startDate: "", endDate: "" },
+          summary: { totalStudents: 0, atRiskCount: 0 },
+          atRiskStudents: [],
+          classInsights: [],
+          gradeInsights: [],
+        });
+      }
+
+      const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
+      const intelligence = await storage.getAttendanceIntelligence(schoolId, date);
+      res.json(intelligence);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // Today status pages
   app.get("/api/today/:status", requireAuth, async (req, res) => {
     try {
@@ -334,10 +770,12 @@ export async function registerRoutes(
         );
       }
       if (gradeFilter && gradeFilter !== "all") {
-        records = records.filter((r: any) => r.gradeLevel === gradeFilter || false);
+        const gradeId = Number(gradeFilter);
+        records = records.filter((r: any) => Number(r.gradeLevelId) === gradeId);
       }
       if (sectionFilter && sectionFilter !== "all") {
-        records = records.filter((r: any) => r.section === sectionFilter || false);
+        const sectionId = Number(sectionFilter);
+        records = records.filter((r: any) => Number(r.sectionId) === sectionId);
       }
 
       const total = records.length;
@@ -377,6 +815,40 @@ export async function registerRoutes(
         sectionId: req.body.sectionId || null,
       });
       res.json(student);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/students/photo", requireAuth, requireRole("super_admin", "school_admin"), photoUpload.single("photo"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(400).json({ message: "No school context" });
+
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "No image uploaded" });
+      if (!file.mimetype.startsWith("image/")) {
+        return res.status(400).json({ message: "Only image files are allowed" });
+      }
+
+      const allowedExt = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+      let ext = path.extname(file.originalname || "").toLowerCase();
+      if (!allowedExt.has(ext)) {
+        const mimeToExt: Record<string, string> = {
+          "image/jpeg": ".jpg",
+          "image/png": ".png",
+          "image/webp": ".webp",
+          "image/gif": ".gif",
+        };
+        ext = mimeToExt[file.mimetype] || ".jpg";
+      }
+
+      const fileName = `${schoolId}-${Date.now()}-${randomBytes(6).toString("hex")}${ext}`;
+      const filePath = path.join(studentPhotoDir, fileName);
+      fs.writeFileSync(filePath, file.buffer);
+
+      const photoUrl = `/uploads/students/${fileName}`;
+      res.json({ photoUrl });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -652,6 +1124,16 @@ export async function registerRoutes(
       }
 
       const today = new Date().toISOString().split("T")[0];
+      const isHoliday = await storage.isHoliday(schoolId, today);
+      if (isHoliday) {
+        return res.json({
+          success: false,
+          message: "No classes today (holiday). Scans are disabled.",
+          studentName: `${student.firstName} ${student.lastName}`,
+          photoUrl: student.photoUrl || null,
+        });
+      }
+
       const now = new Date();
       const existingAttendance = await storage.getDailyAttendance(student.id, today);
 
@@ -683,11 +1165,20 @@ export async function registerRoutes(
           meta: null,
         });
 
+        await maybeSendAttendanceSms({
+          school,
+          student,
+          templateType: isLate ? "late" : "check_in",
+          eventTime: now,
+          status,
+        });
+
         const studentName = `${student.firstName} ${student.lastName}`;
         return res.json({
           success: true,
           message: isLate ? `${studentName} checked in (Late)` : `${studentName} checked in`,
           studentName,
+          photoUrl: student.photoUrl || null,
           status,
           action: isLate ? "Late Check-in" : "Check-in",
           time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
@@ -695,29 +1186,132 @@ export async function registerRoutes(
       }
 
       if (existingAttendance.status === "pending_checkout" || existingAttendance.status === "late") {
-        await storage.updateDailyAttendance(existingAttendance.id, {
-          status: "present",
-          checkOutTime: now,
-        });
+        const movementEnabled = Boolean(school.allowMultipleScans);
+        const minScanIntervalSeconds = clampNumber(school.minScanIntervalSeconds, 0, 600, 120);
+        const maxBreakCyclesPerDay = clampNumber(school.maxBreakCyclesPerDay, 0, 10, 2);
+        const earlyOutWindowMinutes = clampNumber(school.earlyOutWindowMinutes, 0, 180, 30);
+        const dismissalTime = school.dismissalTime || "15:00:00";
+        const lastEvent = await getLastEventForAttendance(existingAttendance.id);
+
+        if (lastEvent?.occurredAt && minScanIntervalSeconds > 0) {
+          const diffSeconds = Math.floor((now.getTime() - new Date(lastEvent.occurredAt).getTime()) / 1000);
+          if (diffSeconds >= 0 && diffSeconds < minScanIntervalSeconds) {
+            return res.json({
+              success: false,
+              message: `Please wait ${minScanIntervalSeconds - diffSeconds}s before scanning again.`,
+              studentName: `${student.firstName} ${student.lastName}`,
+              photoUrl: student.photoUrl || null,
+            });
+          }
+        }
+
+        const studentName = `${student.firstName} ${student.lastName}`;
+        const canFinalizeCheckout = isAfterDismissalWindow(now, dismissalTime, earlyOutWindowMinutes);
+        const isReturningFromBreak = lastEvent?.eventType === "break_out";
+
+        if (movementEnabled && isReturningFromBreak) {
+          await storage.createAttendanceEvent({
+            schoolId,
+            studentId: student.id,
+            dailyAttendanceId: existingAttendance.id,
+            eventType: "break_in",
+            occurredAt: now,
+            performedByUserId: req.session.userId || null,
+            kioskLocationId: kioskLocationId || null,
+            meta: null,
+          });
+
+          await maybeSendAttendanceSms({
+            school,
+            student,
+            templateType: "break_in",
+            eventTime: now,
+            status: existingAttendance.status,
+          });
+
+          return res.json({
+            success: true,
+            message: `${studentName} returned from break`,
+            studentName,
+            photoUrl: student.photoUrl || null,
+            status: existingAttendance.status,
+            action: "Break In",
+            time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          });
+        }
+
+        if (!movementEnabled || canFinalizeCheckout) {
+          await storage.updateDailyAttendance(existingAttendance.id, {
+            status: "present",
+            checkOutTime: now,
+          });
+
+          await storage.createAttendanceEvent({
+            schoolId,
+            studentId: student.id,
+            dailyAttendanceId: existingAttendance.id,
+            eventType: canFinalizeCheckout ? "out_final" : "check_out",
+            occurredAt: now,
+            performedByUserId: req.session.userId || null,
+            kioskLocationId: kioskLocationId || null,
+            meta: null,
+          });
+
+          await maybeSendAttendanceSms({
+            school,
+            student,
+            templateType: canFinalizeCheckout ? "out_final" : "check_out",
+            eventTime: now,
+            status: "present",
+          });
+
+          return res.json({
+            success: true,
+            message: `${studentName} checked out`,
+            studentName,
+            photoUrl: student.photoUrl || null,
+            status: "present",
+            action: "Check-out",
+            time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          });
+        }
+
+        const breakOutCount = await getBreakOutCount(existingAttendance.id);
+        if (breakOutCount >= maxBreakCyclesPerDay) {
+          return res.json({
+            success: false,
+            message: `${studentName} reached max break cycles (${maxBreakCyclesPerDay}) for today.`,
+            studentName,
+            photoUrl: student.photoUrl || null,
+          });
+        }
 
         await storage.createAttendanceEvent({
           schoolId,
           studentId: student.id,
           dailyAttendanceId: existingAttendance.id,
-          eventType: "check_out",
+          eventType: "break_out",
           occurredAt: now,
           performedByUserId: req.session.userId || null,
           kioskLocationId: kioskLocationId || null,
           meta: null,
         });
 
-        const studentName = `${student.firstName} ${student.lastName}`;
+        await maybeSendAttendanceSms({
+          school,
+          student,
+          templateType: "break_out",
+          eventTime: now,
+          status: existingAttendance.status,
+        });
+
         return res.json({
           success: true,
-          message: `${studentName} checked out`,
+          message: `${studentName} started break`,
           studentName,
-          status: "present",
-          action: "Check-out",
+          photoUrl: student.photoUrl || null,
+          status: existingAttendance.status,
+          action: "Break Out",
           time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         });
       }
@@ -727,7 +1321,7 @@ export async function registerRoutes(
           schoolId,
           studentId: student.id,
           dailyAttendanceId: existingAttendance.id,
-          eventType: "extra_scan",
+          eventType: "scan_ignored",
           occurredAt: now,
           performedByUserId: req.session.userId || null,
           kioskLocationId: kioskLocationId || null,
@@ -737,10 +1331,11 @@ export async function registerRoutes(
         const studentName = `${student.firstName} ${student.lastName}`;
         return res.json({
           success: true,
-          message: `${studentName} - extra scan recorded`,
+          message: `${studentName} - scan recorded after final out`,
           studentName,
+          photoUrl: student.photoUrl || null,
           status: existingAttendance.status,
-          action: "Extra Scan",
+          action: "Scan Ignored",
           time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         });
       }
@@ -750,6 +1345,7 @@ export async function registerRoutes(
         success: false,
         message: `${studentName} has already completed attendance today.`,
         studentName,
+        photoUrl: student.photoUrl || null,
       });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message });
@@ -757,14 +1353,20 @@ export async function registerRoutes(
   });
 
   // Manual Attendance
-  app.post("/api/attendance/manual", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+  app.post("/api/attendance/manual", requireAuth, requireRole("super_admin", "school_admin", "gate_staff"), async (req, res) => {
     try {
       const { studentId, action, timestamp } = req.body;
       const student = await storage.getStudent(studentId);
       if (!student) return res.status(404).json({ message: "Student not found" });
 
       const schoolId = student.schoolId;
+      const school = await storage.getSchool(schoolId);
+      if (!school) return res.status(404).json({ message: "School not found" });
       const today = new Date().toISOString().split("T")[0];
+      const isHoliday = await storage.isHoliday(schoolId, today);
+      if (isHoliday) {
+        return res.status(400).json({ message: "No classes today (holiday). Manual attendance is disabled." });
+      }
       const now = timestamp ? new Date(timestamp) : new Date();
 
       if (action === "check_in") {
@@ -792,6 +1394,14 @@ export async function registerRoutes(
           meta: null,
         });
 
+        await maybeSendAttendanceSms({
+          school,
+          student,
+          templateType: "check_in",
+          eventTime: now,
+          status: "pending_checkout",
+        });
+
         return res.json({ success: true, message: "Manual check-in recorded" });
       }
 
@@ -814,6 +1424,14 @@ export async function registerRoutes(
           occurredAt: now,
           performedByUserId: req.session.userId || null,
           meta: null,
+        });
+
+        await maybeSendAttendanceSms({
+          school,
+          student,
+          templateType: "check_out",
+          eventTime: now,
+          status: "present",
         });
 
         return res.json({ success: true, message: "Manual check-out recorded" });
@@ -841,8 +1459,210 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.status(404).json({ message: "No school" });
-      const school = await storage.updateSchool(schoolId, req.body);
+      const payload = {
+        ...req.body,
+        smsDailyCap: clampNumber(req.body.smsDailyCap, 1, 20, 2),
+        maxBreakCyclesPerDay: clampNumber(req.body.maxBreakCyclesPerDay, 0, 10, 2),
+        minScanIntervalSeconds: clampNumber(req.body.minScanIntervalSeconds, 0, 600, 120),
+        earlyOutWindowMinutes: clampNumber(req.body.earlyOutWindowMinutes, 0, 180, 30),
+      };
+      const school = await storage.updateSchool(schoolId, payload);
       res.json(school);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/settings/sms-policies", requireAuth, async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(404).json({ message: "No school context" });
+
+      const school = await storage.getSchool(schoolId);
+      if (!school) return res.status(404).json({ message: "School not found" });
+
+      const gradeRows = await db
+        .select({
+          gradeLevelId: gradeLevels.id,
+          gradeLevelName: gradeLevels.name,
+          enabled: sql<boolean>`coalesce(${gradeSmsPolicies.enabled}, false)`,
+          dailyCap: sql<number>`coalesce(${gradeSmsPolicies.dailyCap}, 2)`,
+        })
+        .from(gradeLevels)
+        .leftJoin(
+          gradeSmsPolicies,
+          and(
+            eq(gradeSmsPolicies.schoolId, schoolId),
+            eq(gradeSmsPolicies.gradeLevelId, gradeLevels.id),
+          ),
+        )
+        .where(eq(gradeLevels.schoolId, schoolId))
+        .orderBy(gradeLevels.name);
+
+      const sectionRows = await db
+        .select({
+          sectionId: sections.id,
+          sectionName: sections.name,
+          gradeLevelName: gradeLevels.name,
+          enabled: sql<boolean>`coalesce(${sectionSmsPolicies.enabled}, false)`,
+          dailyCap: sql<number>`coalesce(${sectionSmsPolicies.dailyCap}, 2)`,
+        })
+        .from(sections)
+        .leftJoin(gradeLevels, eq(sections.gradeLevelId, gradeLevels.id))
+        .leftJoin(
+          sectionSmsPolicies,
+          and(
+            eq(sectionSmsPolicies.schoolId, schoolId),
+            eq(sectionSmsPolicies.sectionId, sections.id),
+          ),
+        )
+        .where(eq(sections.schoolId, schoolId))
+        .orderBy(gradeLevels.name, sections.name);
+
+      res.json({
+        schoolPolicy: {
+          smsDailyCap: school.smsDailyCap,
+          smsSendMode: school.smsSendMode,
+          allowMultipleScans: school.allowMultipleScans,
+          maxBreakCyclesPerDay: school.maxBreakCyclesPerDay,
+          minScanIntervalSeconds: school.minScanIntervalSeconds,
+          dismissalTime: school.dismissalTime,
+          earlyOutWindowMinutes: school.earlyOutWindowMinutes,
+        },
+        gradePolicies: gradeRows.map((row) => ({
+          ...row,
+          dailyCap: clampNumber(row.dailyCap, 1, 20, school.smsDailyCap),
+        })),
+        sectionPolicies: sectionRows.map((row) => ({
+          ...row,
+          dailyCap: clampNumber(row.dailyCap, 1, 20, school.smsDailyCap),
+        })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.patch("/api/settings/sms-policies/grade/:gradeLevelId", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(404).json({ message: "No school context" });
+      const gradeLevelId = Number(req.params.gradeLevelId);
+      if (!Number.isFinite(gradeLevelId)) return res.status(400).json({ message: "Invalid grade level" });
+
+      const [grade] = await db
+        .select({ id: gradeLevels.id })
+        .from(gradeLevels)
+        .where(and(eq(gradeLevels.id, gradeLevelId), eq(gradeLevels.schoolId, schoolId)))
+        .limit(1);
+      if (!grade) return res.status(404).json({ message: "Grade level not found" });
+
+      const enabled = Boolean(req.body.enabled);
+      const dailyCap = clampNumber(req.body.dailyCap, 1, 20, 2);
+
+      await db
+        .insert(gradeSmsPolicies)
+        .values({
+          schoolId,
+          gradeLevelId,
+          enabled,
+          dailyCap,
+          updatedAt: new Date(),
+        })
+        .onDuplicateKeyUpdate({
+          set: {
+            enabled,
+            dailyCap,
+            updatedAt: new Date(),
+          },
+        });
+
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.patch("/api/settings/sms-policies/section/:sectionId", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(404).json({ message: "No school context" });
+      const sectionId = Number(req.params.sectionId);
+      if (!Number.isFinite(sectionId)) return res.status(400).json({ message: "Invalid section" });
+
+      const [section] = await db
+        .select({ id: sections.id })
+        .from(sections)
+        .where(and(eq(sections.id, sectionId), eq(sections.schoolId, schoolId)))
+        .limit(1);
+      if (!section) return res.status(404).json({ message: "Section not found" });
+
+      const enabled = Boolean(req.body.enabled);
+      const dailyCap = clampNumber(req.body.dailyCap, 1, 20, 2);
+
+      await db
+        .insert(sectionSmsPolicies)
+        .values({
+          schoolId,
+          sectionId,
+          enabled,
+          dailyCap,
+          updatedAt: new Date(),
+        })
+        .onDuplicateKeyUpdate({
+          set: {
+            enabled,
+            dailyCap,
+            updatedAt: new Date(),
+          },
+        });
+
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Holidays
+  app.get("/api/holidays", requireAuth, async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.json([]);
+      res.json(await storage.getHolidays(schoolId));
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/holidays", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(400).json({ message: "No school context" });
+      const payload = {
+        schoolId,
+        date: req.body.date,
+        name: req.body.name,
+        type: req.body.type || "holiday",
+        isRecurring: Boolean(req.body.isRecurring),
+      };
+      res.json(await storage.createHoliday(payload));
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.patch("/api/holidays/:id", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      res.json(await storage.updateHoliday(Number(req.params.id), req.body));
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/holidays/:id", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      await storage.deleteHoliday(Number(req.params.id));
+      res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -878,6 +1698,55 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/sms/test", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(400).json({ message: "No school context" });
+
+      const school = await storage.getSchool(schoolId);
+      if (!school) return res.status(404).json({ message: "School not found" });
+      if (!school.smsEnabled) return res.status(400).json({ message: "SMS is disabled for this school" });
+      if (school.smsProvider !== "semaphore") return res.status(400).json({ message: "Only semaphore provider is supported" });
+      if (!hasNonEmptyString(school.semaphoreApiKey)) return res.status(400).json({ message: "Missing Semaphore API key" });
+
+      const rawPhone = hasNonEmptyString(req.body?.phone) ? req.body.phone : "";
+      if (!rawPhone) return res.status(400).json({ message: "Phone is required" });
+      const toPhone = normalizePhone(rawPhone);
+      const testMessage =
+        hasNonEmptyString(req.body?.message)
+          ? req.body.message
+          : `[${school.name}] Test SMS from MYO Attendance sent at ${new Date().toISOString()}`;
+
+      const providerResponse = await sendSemaphoreMessage(
+        school.semaphoreApiKey,
+        school.semaphoreSenderName || null,
+        toPhone,
+        testMessage,
+      );
+      const providerMessageId = getSemaphoreMessageId(providerResponse);
+
+      await storage.createSmsLog({
+        schoolId: school.id,
+        studentId: null,
+        templateType: null,
+        toPhone,
+        message: testMessage,
+        status: "sent",
+        providerMessageId,
+        providerResponse,
+        sentAt: new Date(),
+        errorMessage: null,
+      });
+
+      return res.json({ ok: true, providerResponse });
+    } catch (err: any) {
+      return res.status(500).json({
+        message: err?.message || "Failed to send test SMS",
+        providerResponse: err?.providerResponse ?? null,
+      });
+    }
+  });
+
   // Schools (super_admin)
   app.get("/api/schools", requireAuth, requireRole("super_admin"), async (req, res) => {
     try {
@@ -890,7 +1759,11 @@ export async function registerRoutes(
   app.post("/api/schools", requireAuth, requireRole("super_admin"), async (req, res) => {
     try {
       const { adminUsername, adminPassword, adminFullName, adminEmail, ...schoolData } = req.body;
-      const school = await storage.createSchool(schoolData);
+      const school = await storage.createSchool({
+        ...schoolData,
+        monthlySmsCredits: clampNumber(schoolData.monthlySmsCredits, 0, 1000000, 0),
+        smsOverageRateCents: clampNumber(schoolData.smsOverageRateCents, 0, 100000, 150),
+      });
 
       if (adminUsername && adminPassword) {
         await storage.createUser({
@@ -911,7 +1784,12 @@ export async function registerRoutes(
 
   app.patch("/api/schools/:id", requireAuth, requireRole("super_admin"), async (req, res) => {
     try {
-      res.json(await storage.updateSchool(Number(req.params.id), req.body));
+      const payload = {
+        ...req.body,
+        monthlySmsCredits: clampNumber(req.body.monthlySmsCredits, 0, 1000000, 0),
+        smsOverageRateCents: clampNumber(req.body.smsOverageRateCents, 0, 100000, 150),
+      };
+      res.json(await storage.updateSchool(Number(req.params.id), payload));
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -979,6 +1857,56 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/reports/sms-billing", requireAuth, requireRole("super_admin"), async (req, res) => {
+    try {
+      const monthParam = String(req.query.month || "").trim();
+      const now = new Date();
+      const monthMatch = /^(\d{4})-(\d{2})$/.exec(monthParam);
+      const year = monthMatch ? Number(monthMatch[1]) : now.getFullYear();
+      const monthIndex = monthMatch ? Number(monthMatch[2]) - 1 : now.getMonth();
+
+      const start = new Date(Date.UTC(year, monthIndex, 1));
+      const end = new Date(Date.UTC(year, monthIndex + 1, 0));
+      const startDate = start.toISOString().slice(0, 10);
+      const endDate = end.toISOString().slice(0, 10);
+
+      const rows = await db
+        .select({
+          schoolId: schools.id,
+          schoolName: schools.name,
+          monthlySmsCredits: schools.monthlySmsCredits,
+          smsOverageRateCents: schools.smsOverageRateCents,
+          sentCount: sql<number>`sum(case when ${smsLogs.status} = 'sent' and DATE(${smsLogs.createdAt}) between ${startDate} and ${endDate} then 1 else 0 end)`,
+        })
+        .from(schools)
+        .leftJoin(smsLogs, eq(smsLogs.schoolId, schools.id))
+        .groupBy(schools.id, schools.name, schools.monthlySmsCredits, schools.smsOverageRateCents)
+        .orderBy(schools.name);
+
+      const data = rows.map((r) => {
+        const sent = Number(r.sentCount || 0);
+        const credits = Number(r.monthlySmsCredits || 0);
+        const excess = Math.max(sent - credits, 0);
+        const rateCents = Number(r.smsOverageRateCents || 0);
+        const overageAmountCents = excess * rateCents;
+        return {
+          schoolId: r.schoolId,
+          schoolName: r.schoolName,
+          month: `${year}-${String(monthIndex + 1).padStart(2, "0")}`,
+          sentCount: sent,
+          monthlySmsCredits: credits,
+          excessCount: excess,
+          smsOverageRateCents: rateCents,
+          overageAmountCents,
+        };
+      });
+
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.get("/api/reports/:type/export", requireAuth, async (req, res) => {
     try {
       const schoolId = await getSchoolId(req);
@@ -993,6 +1921,48 @@ export async function registerRoutes(
           startDate as string || new Date().toISOString().split("T")[0],
           endDate as string || new Date().toISOString().split("T")[0],
         );
+      } else if (type === "sms-billing") {
+        const user = await storage.getUserById(req.session.userId!);
+        if (!user || user.role !== "super_admin") {
+          return res.status(403).json({ message: "Forbidden" });
+        }
+        const monthParam = String(req.query.month || "").trim();
+        const now = new Date();
+        const monthMatch = /^(\d{4})-(\d{2})$/.exec(monthParam);
+        const year = monthMatch ? Number(monthMatch[1]) : now.getFullYear();
+        const monthIndex = monthMatch ? Number(monthMatch[2]) - 1 : now.getMonth();
+        const start = new Date(Date.UTC(year, monthIndex, 1));
+        const end = new Date(Date.UTC(year, monthIndex + 1, 0));
+        const startIso = start.toISOString().slice(0, 10);
+        const endIso = end.toISOString().slice(0, 10);
+
+        const rows = await db
+          .select({
+            schoolName: schools.name,
+            sentCount: sql<number>`sum(case when ${smsLogs.status} = 'sent' and DATE(${smsLogs.createdAt}) between ${startIso} and ${endIso} then 1 else 0 end)`,
+            monthlySmsCredits: schools.monthlySmsCredits,
+            smsOverageRateCents: schools.smsOverageRateCents,
+          })
+          .from(schools)
+          .leftJoin(smsLogs, eq(smsLogs.schoolId, schools.id))
+          .groupBy(schools.id, schools.name, schools.monthlySmsCredits, schools.smsOverageRateCents)
+          .orderBy(schools.name);
+
+        data = rows.map((r) => {
+          const sent = Number(r.sentCount || 0);
+          const credits = Number(r.monthlySmsCredits || 0);
+          const excess = Math.max(sent - credits, 0);
+          const rateCents = Number(r.smsOverageRateCents || 0);
+          return {
+            month: `${year}-${String(monthIndex + 1).padStart(2, "0")}`,
+            schoolName: r.schoolName,
+            sentCount: sent,
+            monthlySmsCredits: credits,
+            excessCount: excess,
+            smsOverageRatePhp: (rateCents / 100).toFixed(2),
+            amountDuePhp: (excess * rateCents / 100).toFixed(2),
+          };
+        });
       } else {
         data = await storage.getAttendanceReport(
           schoolId,

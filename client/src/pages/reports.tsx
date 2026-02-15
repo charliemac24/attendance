@@ -29,10 +29,22 @@ interface SmsUsageRecord {
   queued: number;
 }
 
+interface SmsBillingRecord {
+  schoolId: number;
+  schoolName: string;
+  month: string;
+  sentCount: number;
+  monthlySmsCredits: number;
+  excessCount: number;
+  smsOverageRateCents: number;
+  overageAmountCents: number;
+}
+
 const reportConfig: Record<string, { title: string; icon: any; description: string }> = {
   daily: { title: "Daily Report", icon: ClipboardList, description: "Attendance records by date" },
   absentees: { title: "Absentee Report", icon: FileText, description: "Students absent by date range" },
   "sms-usage": { title: "SMS Usage Report", icon: MessageSquare, description: "SMS sending statistics" },
+  "sms-billing": { title: "SMS Billing Report", icon: MessageSquare, description: "Monthly included credits vs overage by school" },
 };
 
 export default function ReportsPage() {
@@ -42,8 +54,12 @@ export default function ReportsPage() {
   const Icon = config.icon;
 
   const today = new Date().toISOString().split("T")[0];
-  const [startDate, setStartDate] = useState(today);
+  const startOfMonth = new Date();
+  startOfMonth.setDate(1);
+  const defaultStartDate = startOfMonth.toISOString().split("T")[0];
+  const [startDate, setStartDate] = useState(defaultStartDate);
   const [endDate, setEndDate] = useState(today);
+  const [month, setMonth] = useState(today.slice(0, 7));
   const [gradeFilter, setGradeFilter] = useState("all");
   const [sectionFilter, setSectionFilter] = useState("all");
 
@@ -55,17 +71,23 @@ export default function ReportsPage() {
     queryKey: ["/api/sections"],
   });
 
-  const { data: reportData, isLoading } = useQuery<ReportRecord[] | SmsUsageRecord[]>({
-    queryKey: [
-      "/api/reports",
-      `/${reportType}?startDate=${startDate}&endDate=${endDate}&grade=${gradeFilter}&section=${sectionFilter}`,
-    ],
+  const reportQueryUrl =
+    reportType === "sms-billing"
+      ? `/api/reports/sms-billing?month=${month}`
+      : `/api/reports/${reportType}?startDate=${startDate}&endDate=${endDate}&grade=${gradeFilter}&section=${sectionFilter}`;
+
+  const { data: reportData, isLoading } = useQuery<ReportRecord[] | SmsUsageRecord[] | SmsBillingRecord[]>({
+    queryKey: [reportQueryUrl],
   });
 
   const handleExport = () => {
+    if (reportType === "sms-billing") {
+      window.open(`/api/reports/sms-billing/export?month=${month}`, "_blank");
+      return;
+    }
     window.open(
       `/api/reports/${reportType}/export?startDate=${startDate}&endDate=${endDate}&grade=${gradeFilter}&section=${sectionFilter}`,
-      "_blank"
+      "_blank",
     );
   };
 
@@ -90,25 +112,38 @@ export default function ReportsPage() {
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-col sm:flex-row gap-3 flex-wrap">
-            <div className="flex items-center gap-2">
-              <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
-              <Input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="w-auto"
-                data-testid="input-start-date"
-              />
-              <span className="text-muted-foreground">to</span>
-              <Input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="w-auto"
-                data-testid="input-end-date"
-              />
-            </div>
-            {reportType !== "sms-usage" && (
+            {reportType === "sms-billing" ? (
+              <div className="flex items-center gap-2">
+                <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
+                <Input
+                  type="month"
+                  value={month}
+                  onChange={(e) => setMonth(e.target.value)}
+                  className="w-auto"
+                  data-testid="input-report-month"
+                />
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
+                <Input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="w-auto"
+                  data-testid="input-start-date"
+                />
+                <span className="text-muted-foreground">to</span>
+                <Input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="w-auto"
+                  data-testid="input-end-date"
+                />
+              </div>
+            )}
+            {reportType !== "sms-usage" && reportType !== "sms-billing" && (
               <>
                 <Select value={gradeFilter} onValueChange={setGradeFilter}>
                   <SelectTrigger className="w-[180px]">
@@ -152,11 +187,52 @@ export default function ReportsPage() {
             </div>
           ) : reportType === "sms-usage" ? (
             <SmsUsageTable data={(reportData as SmsUsageRecord[]) || []} />
+          ) : reportType === "sms-billing" ? (
+            <SmsBillingTable data={(reportData as SmsBillingRecord[]) || []} />
           ) : (
             <AttendanceTable data={(reportData as ReportRecord[]) || []} />
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function SmsBillingTable({ data }: { data: SmsBillingRecord[] }) {
+  if (data.length === 0) {
+    return (
+      <div className="p-12 text-center">
+        <MessageSquare className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+        <p className="text-muted-foreground">No billing data found</p>
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b bg-muted/30">
+            <th className="text-left py-3 px-4 font-medium">School</th>
+            <th className="text-center py-3 px-4 font-medium">Sent SMS</th>
+            <th className="text-center py-3 px-4 font-medium">Included Credits</th>
+            <th className="text-center py-3 px-4 font-medium">Excess</th>
+            <th className="text-center py-3 px-4 font-medium">Rate</th>
+            <th className="text-right py-3 px-4 font-medium">Amount Due</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((r) => (
+            <tr key={r.schoolId} className="border-b last:border-0">
+              <td className="py-3 px-4 font-medium">{r.schoolName}</td>
+              <td className="py-3 px-4 text-center">{r.sentCount}</td>
+              <td className="py-3 px-4 text-center">{r.monthlySmsCredits}</td>
+              <td className="py-3 px-4 text-center">{r.excessCount}</td>
+              <td className="py-3 px-4 text-center">PHP {(r.smsOverageRateCents / 100).toFixed(2)}</td>
+              <td className="py-3 px-4 text-right font-semibold">PHP {(r.overageAmountCents / 100).toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

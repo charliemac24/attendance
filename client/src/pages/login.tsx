@@ -85,13 +85,6 @@ export default function LoginPage() {
                 {isLoading ? "Signing in..." : "Sign In"}
               </Button>
             </form>
-            <div className="mt-6 p-3 rounded-md bg-muted text-xs text-muted-foreground">
-              <p className="font-medium mb-1">Demo Accounts:</p>
-              <p>Super Admin: super / password</p>
-              <p>School Admin: admin / password</p>
-              <p>Gate Staff: gate / password</p>
-              <p>Teacher: teacher / password</p>
-            </div>
           </CardContent>
         </Card>
       </div>

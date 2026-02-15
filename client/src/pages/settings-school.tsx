@@ -26,7 +26,13 @@ export default function SettingsSchoolPage() {
     lateTime: "08:00",
     cutoffTime: "09:00",
     smsEnabled: false,
+    smsDailyCap: 2,
+    smsSendMode: "FIRST_IN_LAST_OUT",
     allowMultipleScans: false,
+    maxBreakCyclesPerDay: 2,
+    minScanIntervalSeconds: 120,
+    dismissalTime: "15:00",
+    earlyOutWindowMinutes: 30,
   });
 
   useEffect(() => {
@@ -37,7 +43,13 @@ export default function SettingsSchoolPage() {
         lateTime: school.lateTime?.substring(0, 5) || "08:00",
         cutoffTime: school.cutoffTime?.substring(0, 5) || "09:00",
         smsEnabled: school.smsEnabled,
+        smsDailyCap: school.smsDailyCap ?? 2,
+        smsSendMode: school.smsSendMode ?? "FIRST_IN_LAST_OUT",
         allowMultipleScans: school.allowMultipleScans,
+        maxBreakCyclesPerDay: school.maxBreakCyclesPerDay ?? 2,
+        minScanIntervalSeconds: school.minScanIntervalSeconds ?? 120,
+        dismissalTime: school.dismissalTime?.substring(0, 5) || "15:00",
+        earlyOutWindowMinutes: school.earlyOutWindowMinutes ?? 30,
       });
     }
   }, [school]);
@@ -139,13 +151,85 @@ export default function SettingsSchoolPage() {
             <div className="flex items-center justify-between gap-2">
               <div>
                 <Label>Allow Multiple Scans</Label>
-                <p className="text-sm text-muted-foreground">Allow more than 2 scans per day</p>
+                <p className="text-sm text-muted-foreground">Enable break in/out movement scans</p>
               </div>
               <Switch
                 checked={formData.allowMultipleScans}
                 onCheckedChange={(v) => setFormData({ ...formData, allowMultipleScans: v })}
                 data-testid="switch-multiple-scans"
               />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>School-wide SMS Cap (per student/day)</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={formData.smsDailyCap}
+                  onChange={(e) => setFormData({ ...formData, smsDailyCap: Number(e.target.value) })}
+                  data-testid="input-sms-daily-cap"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>SMS Send Mode</Label>
+                <select
+                  className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
+                  value={formData.smsSendMode}
+                  onChange={(e) => setFormData({ ...formData, smsSendMode: e.target.value })}
+                  data-testid="select-sms-send-mode"
+                >
+                  <option value="FIRST_IN_LAST_OUT">First In + Final Out</option>
+                  <option value="ALL_MOVEMENTS">All Movements</option>
+                  <option value="EXCEPTIONS_ONLY">Exceptions Only (Late/Absent)</option>
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Max Break Cycles per Day</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={10}
+                  value={formData.maxBreakCyclesPerDay}
+                  onChange={(e) => setFormData({ ...formData, maxBreakCyclesPerDay: Number(e.target.value) })}
+                  data-testid="input-max-break-cycles"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Minimum Scan Interval (seconds)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={600}
+                  value={formData.minScanIntervalSeconds}
+                  onChange={(e) => setFormData({ ...formData, minScanIntervalSeconds: Number(e.target.value) })}
+                  data-testid="input-min-scan-interval"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Dismissal Time</Label>
+                <Input
+                  type="time"
+                  value={formData.dismissalTime}
+                  onChange={(e) => setFormData({ ...formData, dismissalTime: e.target.value })}
+                  data-testid="input-dismissal-time"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Early Out Window (minutes)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={180}
+                  value={formData.earlyOutWindowMinutes}
+                  onChange={(e) => setFormData({ ...formData, earlyOutWindowMinutes: Number(e.target.value) })}
+                  data-testid="input-early-out-window"
+                />
+              </div>
             </div>
             <Button type="submit" disabled={saveMutation.isPending} data-testid="button-save-settings">
               {saveMutation.isPending ? "Saving..." : "Save Settings"}
