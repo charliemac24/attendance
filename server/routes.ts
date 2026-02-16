@@ -308,6 +308,16 @@ async function maybeSendAttendanceSms(args: {
 }) {
   const { school, student, templateType, eventTime, status } = args;
   if (!school?.id || !student?.id) return;
+  if (!student.isActive) {
+    await createSkippedSmsLog({
+      schoolId: school.id,
+      studentId: student.id,
+      templateType,
+      toPhone: student?.guardianPhone ?? null,
+      reason: "Student is inactive",
+    });
+    return;
+  }
   if (!school.smsEnabled) {
     await createSkippedSmsLog({
       schoolId: school.id,
@@ -810,7 +820,7 @@ export async function registerRoutes(
         ...req.body,
         schoolId,
         qrToken,
-        isActive: true,
+        isActive: req.body.isActive === false ? false : true,
         gradeLevelId: req.body.gradeLevelId || null,
         sectionId: req.body.sectionId || null,
       });
@@ -856,7 +866,11 @@ export async function registerRoutes(
 
   app.patch("/api/students/:id", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
     try {
-      const student = await storage.updateStudent(Number(req.params.id), req.body);
+      const payload = {
+        ...req.body,
+        isActive: typeof req.body.isActive === "boolean" ? req.body.isActive : undefined,
+      };
+      const student = await storage.updateStudent(Number(req.params.id), payload);
       res.json(student);
     } catch (err: any) {
       res.status(500).json({ message: err.message });

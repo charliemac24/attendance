@@ -99,7 +99,8 @@ app.use((req, res, next) => {
     {
       port,
       host: "0.0.0.0",
-      reusePort: true,
+      // reusePort can trigger ENOTSUP on macOS; enable only when explicitly requested
+      reusePort: process.env.REUSE_PORT === "true",
     },
     () => {
       log(`serving on port ${port}`);

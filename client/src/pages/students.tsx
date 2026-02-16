@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Plus, Search, Edit, Users, Trash2, Printer, X } from "lucide-react";
@@ -167,7 +168,7 @@ export default function StudentsPage() {
     queryKey: ["/api/sections"],
   });
 
-  const [formData, setFormData] = useState({
+const [formData, setFormData] = useState({
     firstName: "",
     lastName: "",
     studentNo: "",
@@ -176,6 +177,7 @@ export default function StudentsPage() {
     guardianName: "",
     guardianPhone: "",
     photoUrl: "",
+    isActive: true,
   });
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string>("");
@@ -214,6 +216,7 @@ export default function StudentsPage() {
         photoUrl:
           uploadedPhotoUrl ??
           (data.photoUrl === "" ? null : data.photoUrl || null),
+        isActive: Boolean(data.isActive),
       };
 
       if (editingStudent) {
@@ -251,7 +254,7 @@ export default function StudentsPage() {
     },
   });
 
-  const resetForm = () => {
+const resetForm = () => {
     setFormData({
       firstName: "",
       lastName: "",
@@ -261,12 +264,13 @@ export default function StudentsPage() {
       guardianName: "",
       guardianPhone: "",
       photoUrl: "",
+      isActive: true,
     });
     setPhotoFile(null);
     setPhotoPreviewUrl("");
   };
 
-  const openEdit = (student: StudentWithRelations) => {
+const openEdit = (student: StudentWithRelations) => {
     setEditingStudent(student);
     setFormData({
       firstName: student.firstName,
@@ -277,6 +281,7 @@ export default function StudentsPage() {
       guardianName: student.guardianName || "",
       guardianPhone: student.guardianPhone || "",
       photoUrl: student.photoUrl || "",
+      isActive: student.isActive,
     });
     setPhotoFile(null);
     setPhotoPreviewUrl("");
@@ -622,6 +627,14 @@ export default function StudentsPage() {
                   setFormData({ ...formData, guardianPhone: e.target.value })
                 }
                 data-testid="input-guardian-phone"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="isActive" className="cursor-pointer">Active</Label>
+              <Switch
+                id="isActive"
+                checked={formData.isActive}
+                onCheckedChange={(checked) => setFormData({ ...formData, isActive: checked })}
               />
             </div>
             <div className="flex justify-end gap-2">

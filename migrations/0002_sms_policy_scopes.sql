@@ -1,9 +1,15 @@
 ALTER TABLE `schools` ADD `sms_daily_cap` int NOT NULL DEFAULT 2;
+--> statement-breakpoint
 ALTER TABLE `schools` ADD `sms_send_mode` varchar(32) NOT NULL DEFAULT 'FIRST_IN_LAST_OUT';
+--> statement-breakpoint
 ALTER TABLE `schools` ADD `max_break_cycles_per_day` int NOT NULL DEFAULT 2;
+--> statement-breakpoint
 ALTER TABLE `schools` ADD `min_scan_interval_seconds` int NOT NULL DEFAULT 120;
+--> statement-breakpoint
 ALTER TABLE `schools` ADD `dismissal_time` time NOT NULL DEFAULT '15:00:00';
+--> statement-breakpoint
 ALTER TABLE `schools` ADD `early_out_window_minutes` int NOT NULL DEFAULT 30;
+--> statement-breakpoint
 
 CREATE TABLE `grade_sms_policies` (
   `id` int AUTO_INCREMENT NOT NULL,
