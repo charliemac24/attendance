@@ -26,7 +26,7 @@ export default function SchoolsPage() {
     lateTime: "08:00",
     cutoffTime: "09:00",
     smsEnabled: false,
-    allowMultipleScans: false,
+    allowMultipleScans: true,
     smsProvider: "semaphore",
     semaphoreApiKey: "",
     semaphoreSenderName: "",
@@ -50,7 +50,7 @@ export default function SchoolsPage() {
         lateTime: formData.lateTime,
         cutoffTime: formData.cutoffTime,
         smsEnabled: formData.smsEnabled,
-        allowMultipleScans: formData.allowMultipleScans,
+        allowMultipleScans: true,
         smsProvider: formData.smsProvider,
         semaphoreApiKey: formData.semaphoreApiKey,
         semaphoreSenderName: formData.semaphoreSenderName,
@@ -102,7 +102,7 @@ export default function SchoolsPage() {
       lateTime: "08:00",
       cutoffTime: "09:00",
       smsEnabled: false,
-      allowMultipleScans: false,
+      allowMultipleScans: true,
       smsProvider: "semaphore",
       semaphoreApiKey: "",
       semaphoreSenderName: "",
@@ -124,7 +124,7 @@ export default function SchoolsPage() {
       lateTime: school.lateTime?.substring(0, 5) || "08:00",
       cutoffTime: school.cutoffTime?.substring(0, 5) || "09:00",
       smsEnabled: school.smsEnabled,
-      allowMultipleScans: school.allowMultipleScans,
+      allowMultipleScans: true,
       smsProvider: school.smsProvider,
       semaphoreApiKey: school.semaphoreApiKey || "",
       semaphoreSenderName: school.semaphoreSenderName || "",
@@ -315,13 +315,6 @@ export default function SchoolsPage() {
               <Switch
                 checked={formData.smsEnabled}
                 onCheckedChange={(v) => setFormData({ ...formData, smsEnabled: v })}
-              />
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <Label>Allow Multiple Scans</Label>
-              <Switch
-                checked={formData.allowMultipleScans}
-                onCheckedChange={(v) => setFormData({ ...formData, allowMultipleScans: v })}
               />
             </div>
             <div className="space-y-2">

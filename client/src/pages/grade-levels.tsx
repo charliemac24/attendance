@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -13,6 +13,8 @@ import type { GradeLevel } from "@shared/schema";
 
 export default function GradeLevelsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [gradeToDelete, setGradeToDelete] = useState<GradeLevel | null>(null);
   const [editing, setEditing] = useState<GradeLevel | null>(null);
   const [name, setName] = useState("");
   const { toast } = useToast();
@@ -47,12 +49,19 @@ export default function GradeLevelsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/grade-levels"] });
+      setDeleteDialogOpen(false);
+      setGradeToDelete(null);
       toast({ title: "Grade level deleted" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
+
+  const confirmDelete = (gradeLevel: GradeLevel) => {
+    setGradeToDelete(gradeLevel);
+    setDeleteDialogOpen(true);
+  };
 
   return (
     <div className="p-6 space-y-6 max-w-4xl mx-auto">
@@ -105,7 +114,7 @@ export default function GradeLevelsPage() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      onClick={() => deleteMutation.mutate(gl.id)}
+                      onClick={() => confirmDelete(gl)}
                       data-testid={`button-delete-grade-${gl.id}`}
                     >
                       <Trash2 className="h-4 w-4" />
@@ -156,6 +165,30 @@ export default function GradeLevelsPage() {
               </Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete Grade Level</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete <strong>{gradeToDelete?.name}</strong>? This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => gradeToDelete && deleteMutation.mutate(gradeToDelete.id)}
+              disabled={deleteMutation.isPending}
+              data-testid="button-confirm-delete-grade"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

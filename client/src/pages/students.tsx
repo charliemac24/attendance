@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -152,6 +152,8 @@ function renderPrintWindow(printWindow: Window, title: string, items: Array<{ fu
 export default function StudentsPage() {
   const [search, setSearch] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [studentToDelete, setStudentToDelete] = useState<StudentWithRelations | null>(null);
   const [editingStudent, setEditingStudent] = useState<StudentWithRelations | null>(null);
   const [isPrinting, setIsPrinting] = useState(false);
   const { toast } = useToast();
@@ -247,12 +249,19 @@ const [formData, setFormData] = useState({
       queryClient.invalidateQueries({
         predicate: (query) => (query.queryKey[0] as string)?.startsWith("/api/students"),
       });
+      setDeleteDialogOpen(false);
+      setStudentToDelete(null);
       toast({ title: "Student deleted" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
+
+  const confirmDelete = (student: StudentWithRelations) => {
+    setStudentToDelete(student);
+    setDeleteDialogOpen(true);
+  };
 
 const resetForm = () => {
     setFormData({
@@ -463,7 +472,7 @@ const openEdit = (student: StudentWithRelations) => {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => deleteMutation.mutate(student.id)}
+                            onClick={() => confirmDelete(student)}
                             data-testid={`button-delete-student-${student.id}`}
                           >
                             <Trash2 className="h-4 w-4" />
@@ -650,6 +659,31 @@ const openEdit = (student: StudentWithRelations) => {
               </Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete Student</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete <strong>{studentToDelete?.firstName} {studentToDelete?.lastName}</strong>
+              {" "}({studentToDelete?.studentNo})? This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => studentToDelete && deleteMutation.mutate(studentToDelete.id)}
+              disabled={deleteMutation.isPending}
+              data-testid="button-confirm-delete-student"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

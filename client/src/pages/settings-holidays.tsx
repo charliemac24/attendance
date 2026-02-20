@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -26,6 +27,8 @@ export default function SettingsHolidaysPage() {
   const [name, setName] = useState("");
   const [type, setType] = useState("holiday");
   const [isRecurring, setIsRecurring] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [holidayToDelete, setHolidayToDelete] = useState<Holiday | null>(null);
 
   const { data: holidays, isLoading } = useQuery<Holiday[]>({
     queryKey: ["/api/holidays"],
@@ -58,12 +61,19 @@ export default function SettingsHolidaysPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/holidays"] });
+      setDeleteDialogOpen(false);
+      setHolidayToDelete(null);
       toast({ title: "Holiday removed" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
+
+  const confirmDelete = (holiday: Holiday) => {
+    setHolidayToDelete(holiday);
+    setDeleteDialogOpen(true);
+  };
 
   return (
     <div className="p-6 space-y-6 max-w-4xl mx-auto">
@@ -145,7 +155,7 @@ export default function SettingsHolidaysPage() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    onClick={() => deleteMutation.mutate(h.id)}
+                    onClick={() => confirmDelete(h)}
                     disabled={deleteMutation.isPending}
                   >
                     <Trash2 className="h-4 w-4" />
@@ -161,7 +171,31 @@ export default function SettingsHolidaysPage() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete Holiday</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete <strong>{holidayToDelete?.name}</strong> on{" "}
+              <strong>{holidayToDelete?.date}</strong>? This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => holidayToDelete && deleteMutation.mutate(holidayToDelete.id)}
+              disabled={deleteMutation.isPending}
+              data-testid="button-confirm-delete-holiday"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
-

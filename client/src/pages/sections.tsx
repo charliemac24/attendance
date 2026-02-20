@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -16,6 +16,8 @@ type SectionWithGrade = { id: number; name: string; schoolId: number; gradeLevel
 
 export default function SectionsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [sectionToDelete, setSectionToDelete] = useState<SectionWithGrade | null>(null);
   const [editing, setEditing] = useState<SectionWithGrade | null>(null);
   const [name, setName] = useState("");
   const [gradeLevelId, setGradeLevelId] = useState("");
@@ -60,12 +62,19 @@ export default function SectionsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/sections"] });
+      setDeleteDialogOpen(false);
+      setSectionToDelete(null);
       toast({ title: "Section deleted" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
+
+  const confirmDelete = (section: SectionWithGrade) => {
+    setSectionToDelete(section);
+    setDeleteDialogOpen(true);
+  };
 
   return (
     <div className="p-6 space-y-6 max-w-4xl mx-auto">
@@ -119,7 +128,7 @@ export default function SectionsPage() {
                     >
                       <Edit className="h-4 w-4" />
                     </Button>
-                    <Button variant="ghost" size="icon" onClick={() => deleteMutation.mutate(s.id)}>
+                    <Button variant="ghost" size="icon" onClick={() => confirmDelete(s)}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
@@ -181,6 +190,30 @@ export default function SectionsPage() {
               </Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete Section</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete <strong>{sectionToDelete?.name}</strong>? This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => sectionToDelete && deleteMutation.mutate(sectionToDelete.id)}
+              disabled={deleteMutation.isPending}
+              data-testid="button-confirm-delete-section"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

@@ -130,6 +130,7 @@ export default function SettingsSmsPoliciesPage() {
           <p className="text-sm text-muted-foreground">
             Precedence: Section override, then Grade override, then School-wide cap ({schoolCap}).
           </p>
+          <p className="text-xs text-muted-foreground">Set cap to <code>-1</code> for unlimited SMS per student/day.</p>
         </div>
       </div>
 
@@ -160,7 +161,7 @@ export default function SettingsSmsPoliciesPage() {
               </div>
               <Input
                 type="number"
-                min={1}
+                min={-1}
                 max={20}
                 className="w-24"
                 value={gradeDraft[row.gradeLevelId]?.dailyCap ?? row.dailyCap}
@@ -223,7 +224,7 @@ export default function SettingsSmsPoliciesPage() {
               </div>
               <Input
                 type="number"
-                min={1}
+                min={-1}
                 max={20}
                 className="w-24"
                 value={sectionDraft[row.sectionId]?.dailyCap ?? row.dailyCap}

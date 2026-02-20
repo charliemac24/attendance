@@ -200,6 +200,15 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   return Math.min(max, Math.max(min, Math.trunc(n)));
 }
 
+// SMS cap supports -1 to mean unlimited.
+function normalizeSmsDailyCap(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const normalized = Math.trunc(n);
+  if (normalized === -1) return -1;
+  return Math.min(20, Math.max(1, normalized));
+}
+
 function isAfterDismissalWindow(now: Date, dismissalTime: string, earlyOutWindowMinutes: number): boolean {
   const [hourStr, minuteStr] = dismissalTime.split(":");
   const dismissalMinutes = (Number(hourStr) * 60) + Number(minuteStr);
@@ -213,7 +222,7 @@ async function getEffectiveSmsDailyCap(params: {
   sectionId: number | null;
   schoolCap: number;
 }): Promise<number> {
-  const baseCap = clampNumber(params.schoolCap, 1, 20, 2);
+  const baseCap = normalizeSmsDailyCap(params.schoolCap, 2);
 
   if (params.sectionId) {
     const [sectionPolicy] = await db
@@ -227,7 +236,7 @@ async function getEffectiveSmsDailyCap(params: {
         ),
       )
       .limit(1);
-    if (sectionPolicy) return clampNumber(sectionPolicy.dailyCap, 1, 20, baseCap);
+    if (sectionPolicy) return normalizeSmsDailyCap(sectionPolicy.dailyCap, baseCap);
   }
 
   if (params.gradeLevelId) {
@@ -242,7 +251,7 @@ async function getEffectiveSmsDailyCap(params: {
         ),
       )
       .limit(1);
-    if (gradePolicy) return clampNumber(gradePolicy.dailyCap, 1, 20, baseCap);
+    if (gradePolicy) return normalizeSmsDailyCap(gradePolicy.dailyCap, baseCap);
   }
 
   return baseCap;
@@ -276,19 +285,6 @@ async function getLastEventForAttendance(dailyAttendanceId: number) {
     .limit(1);
 
   return event;
-}
-
-async function getBreakOutCount(dailyAttendanceId: number): Promise<number> {
-  const [row] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(attendanceEvents)
-    .where(
-      and(
-        eq(attendanceEvents.dailyAttendanceId, dailyAttendanceId),
-        eq(attendanceEvents.eventType, "break_out"),
-      ),
-    );
-  return Number(row?.count || 0);
 }
 
 async function maybeSendAttendanceSms(args: {
@@ -361,25 +357,6 @@ async function maybeSendAttendanceSms(args: {
     return;
   }
 
-  const sendMode = (school.smsSendMode || "FIRST_IN_LAST_OUT").toUpperCase();
-  const shouldSendByMode =
-    sendMode === "ALL_MOVEMENTS"
-      ? true
-      : sendMode === "EXCEPTIONS_ONLY"
-        ? templateType === "late" || templateType === "absent" || templateType === "early_out"
-        : templateType === "check_in" || templateType === "check_out" || templateType === "out_final";
-
-  if (!shouldSendByMode) {
-    await createSkippedSmsLog({
-      schoolId: school.id,
-      studentId: student.id,
-      templateType,
-      toPhone: student.guardianPhone,
-      reason: `SMS mode ${sendMode} skipped ${templateType}`,
-    });
-    return;
-  }
-
   const today = eventTime.toISOString().slice(0, 10);
   const effectiveCap = await getEffectiveSmsDailyCap({
     schoolId: school.id,
@@ -388,7 +365,7 @@ async function maybeSendAttendanceSms(args: {
     schoolCap: school.smsDailyCap,
   });
   const usedCount = await getStudentSmsSentCountForDate(school.id, student.id, today);
-  if (usedCount >= effectiveCap) {
+  if (effectiveCap !== -1 && usedCount >= effectiveCap) {
     await createSkippedSmsLog({
       schoolId: school.id,
       studentId: student.id,
@@ -1200,9 +1177,7 @@ export async function registerRoutes(
       }
 
       if (existingAttendance.status === "pending_checkout" || existingAttendance.status === "late") {
-        const movementEnabled = Boolean(school.allowMultipleScans);
         const minScanIntervalSeconds = clampNumber(school.minScanIntervalSeconds, 0, 600, 120);
-        const maxBreakCyclesPerDay = clampNumber(school.maxBreakCyclesPerDay, 0, 10, 2);
         const earlyOutWindowMinutes = clampNumber(school.earlyOutWindowMinutes, 0, 180, 30);
         const dismissalTime = school.dismissalTime || "15:00:00";
         const lastEvent = await getLastEventForAttendance(existingAttendance.id);
@@ -1221,9 +1196,9 @@ export async function registerRoutes(
 
         const studentName = `${student.firstName} ${student.lastName}`;
         const canFinalizeCheckout = isAfterDismissalWindow(now, dismissalTime, earlyOutWindowMinutes);
-        const isReturningFromBreak = lastEvent?.eventType === "break_out";
+        const isReturningFromBreak = lastEvent?.eventType === "break_out" || lastEvent?.eventType === "early_out";
 
-        if (movementEnabled && isReturningFromBreak) {
+        if (isReturningFromBreak) {
           await storage.createAttendanceEvent({
             schoolId,
             studentId: student.id,
@@ -1254,7 +1229,7 @@ export async function registerRoutes(
           });
         }
 
-        if (!movementEnabled || canFinalizeCheckout) {
+        if (canFinalizeCheckout) {
           await storage.updateDailyAttendance(existingAttendance.id, {
             status: "present",
             checkOutTime: now,
@@ -1264,7 +1239,7 @@ export async function registerRoutes(
             schoolId,
             studentId: student.id,
             dailyAttendanceId: existingAttendance.id,
-            eventType: canFinalizeCheckout ? "out_final" : "check_out",
+            eventType: "out_final",
             occurredAt: now,
             performedByUserId: req.session.userId || null,
             kioskLocationId: kioskLocationId || null,
@@ -1274,7 +1249,7 @@ export async function registerRoutes(
           await maybeSendAttendanceSms({
             school,
             student,
-            templateType: canFinalizeCheckout ? "out_final" : "check_out",
+            templateType: "out_final",
             eventTime: now,
             status: "present",
           });
@@ -1285,18 +1260,8 @@ export async function registerRoutes(
             studentName,
             photoUrl: student.photoUrl || null,
             status: "present",
-            action: "Check-out",
+            action: "Final Out",
             time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          });
-        }
-
-        const breakOutCount = await getBreakOutCount(existingAttendance.id);
-        if (breakOutCount >= maxBreakCyclesPerDay) {
-          return res.json({
-            success: false,
-            message: `${studentName} reached max break cycles (${maxBreakCyclesPerDay}) for today.`,
-            studentName,
-            photoUrl: student.photoUrl || null,
           });
         }
 
@@ -1304,7 +1269,7 @@ export async function registerRoutes(
           schoolId,
           studentId: student.id,
           dailyAttendanceId: existingAttendance.id,
-          eventType: "break_out",
+          eventType: "early_out",
           occurredAt: now,
           performedByUserId: req.session.userId || null,
           kioskLocationId: kioskLocationId || null,
@@ -1314,52 +1279,42 @@ export async function registerRoutes(
         await maybeSendAttendanceSms({
           school,
           student,
-          templateType: "break_out",
+          templateType: "early_out",
           eventTime: now,
           status: existingAttendance.status,
         });
 
         return res.json({
           success: true,
-          message: `${studentName} started break`,
+          message: `${studentName} left early`,
           studentName,
           photoUrl: student.photoUrl || null,
           status: existingAttendance.status,
-          action: "Break Out",
+          action: "Early Out",
           time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         });
       }
 
-      if (school.allowMultipleScans) {
-        await storage.createAttendanceEvent({
-          schoolId,
-          studentId: student.id,
-          dailyAttendanceId: existingAttendance.id,
-          eventType: "scan_ignored",
-          occurredAt: now,
-          performedByUserId: req.session.userId || null,
-          kioskLocationId: kioskLocationId || null,
-          meta: null,
-        });
-
-        const studentName = `${student.firstName} ${student.lastName}`;
-        return res.json({
-          success: true,
-          message: `${studentName} - scan recorded after final out`,
-          studentName,
-          photoUrl: student.photoUrl || null,
-          status: existingAttendance.status,
-          action: "Scan Ignored",
-          time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        });
-      }
+      await storage.createAttendanceEvent({
+        schoolId,
+        studentId: student.id,
+        dailyAttendanceId: existingAttendance.id,
+        eventType: "scan_ignored",
+        occurredAt: now,
+        performedByUserId: req.session.userId || null,
+        kioskLocationId: kioskLocationId || null,
+        meta: null,
+      });
 
       const studentName = `${student.firstName} ${student.lastName}`;
       return res.json({
-        success: false,
-        message: `${studentName} has already completed attendance today.`,
+        success: true,
+        message: `${studentName} - scan recorded after final out`,
         studentName,
         photoUrl: student.photoUrl || null,
+        status: existingAttendance.status,
+        action: "Scan Ignored",
+        time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message });
@@ -1475,8 +1430,9 @@ export async function registerRoutes(
       if (!schoolId) return res.status(404).json({ message: "No school" });
       const payload = {
         ...req.body,
-        smsDailyCap: clampNumber(req.body.smsDailyCap, 1, 20, 2),
-        maxBreakCyclesPerDay: clampNumber(req.body.maxBreakCyclesPerDay, 0, 10, 2),
+        smsDailyCap: normalizeSmsDailyCap(req.body.smsDailyCap, 2),
+        smsSendMode: "ALL_MOVEMENTS",
+        allowMultipleScans: true,
         minScanIntervalSeconds: clampNumber(req.body.minScanIntervalSeconds, 0, 600, 120),
         earlyOutWindowMinutes: clampNumber(req.body.earlyOutWindowMinutes, 0, 180, 30),
       };
@@ -1545,11 +1501,11 @@ export async function registerRoutes(
         },
         gradePolicies: gradeRows.map((row) => ({
           ...row,
-          dailyCap: clampNumber(row.dailyCap, 1, 20, school.smsDailyCap),
+          dailyCap: normalizeSmsDailyCap(row.dailyCap, school.smsDailyCap),
         })),
         sectionPolicies: sectionRows.map((row) => ({
           ...row,
-          dailyCap: clampNumber(row.dailyCap, 1, 20, school.smsDailyCap),
+          dailyCap: normalizeSmsDailyCap(row.dailyCap, school.smsDailyCap),
         })),
       });
     } catch (err: any) {
@@ -1572,7 +1528,7 @@ export async function registerRoutes(
       if (!grade) return res.status(404).json({ message: "Grade level not found" });
 
       const enabled = Boolean(req.body.enabled);
-      const dailyCap = clampNumber(req.body.dailyCap, 1, 20, 2);
+      const dailyCap = normalizeSmsDailyCap(req.body.dailyCap, 2);
 
       await db
         .insert(gradeSmsPolicies)
@@ -1612,7 +1568,7 @@ export async function registerRoutes(
       if (!section) return res.status(404).json({ message: "Section not found" });
 
       const enabled = Boolean(req.body.enabled);
-      const dailyCap = clampNumber(req.body.dailyCap, 1, 20, 2);
+      const dailyCap = normalizeSmsDailyCap(req.body.dailyCap, 2);
 
       await db
         .insert(sectionSmsPolicies)
@@ -1775,6 +1731,8 @@ export async function registerRoutes(
       const { adminUsername, adminPassword, adminFullName, adminEmail, ...schoolData } = req.body;
       const school = await storage.createSchool({
         ...schoolData,
+        smsSendMode: "ALL_MOVEMENTS",
+        allowMultipleScans: true,
         monthlySmsCredits: clampNumber(schoolData.monthlySmsCredits, 0, 1000000, 0),
         smsOverageRateCents: clampNumber(schoolData.smsOverageRateCents, 0, 100000, 150),
       });
@@ -1800,6 +1758,8 @@ export async function registerRoutes(
     try {
       const payload = {
         ...req.body,
+        smsSendMode: "ALL_MOVEMENTS",
+        allowMultipleScans: true,
         monthlySmsCredits: clampNumber(req.body.monthlySmsCredits, 0, 1000000, 0),
         smsOverageRateCents: clampNumber(req.body.smsOverageRateCents, 0, 100000, 150),
       };

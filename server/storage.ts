@@ -23,9 +23,9 @@ const DEFAULT_SMS_TEMPLATES: Array<{ type: string; text: string; enabled: boolea
   { type: "check_in", text: "[{school_name}] {student_name} checked in at {time} on {date}.", enabled: true },
   { type: "check_out", text: "[{school_name}] {student_name} checked out at {time} on {date}.", enabled: true },
   { type: "out_final", text: "[{school_name}] {student_name} dismissed at {time} on {date}.", enabled: true },
-  { type: "break_out", text: "[{school_name}] {student_name} went out for break at {time} on {date}.", enabled: false },
-  { type: "break_in", text: "[{school_name}] {student_name} returned from break at {time} on {date}.", enabled: false },
-  { type: "early_out", text: "[{school_name}] {student_name} left early at {time} on {date}.", enabled: false },
+  { type: "break_out", text: "[{school_name}] {student_name} went out for break at {time} on {date}.", enabled: true },
+  { type: "break_in", text: "[{school_name}] {student_name} returned from break at {time} on {date}.", enabled: true },
+  { type: "early_out", text: "[{school_name}] {student_name} left early at {time} on {date}.", enabled: true },
   { type: "late", text: "[{school_name}] {student_name} arrived late at {time} on {date}.", enabled: true },
   { type: "absent", text: "[{school_name}] {student_name} was marked absent on {date}.", enabled: true },
 ];
@@ -965,7 +965,8 @@ export class DatabaseStorage implements IStorage {
       lateTime: "08:00:00",
       cutoffTime: "09:00:00",
       smsEnabled: false,
-      allowMultipleScans: false,
+      smsSendMode: "ALL_MOVEMENTS",
+      allowMultipleScans: true,
       smsProvider: "semaphore",
     }).$returningId();
     const [school] = await db.select().from(schools).where(eq(schools.id, schoolId));
