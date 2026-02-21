@@ -72,36 +72,21 @@ function openPrintWindowShell(title: string): Window {
   return printWindow;
 }
 
-function renderPrintWindow(printWindow: Window, title: string, items: Array<{ fullName: string; studentNo: string; qrDataUrl: string }>) {
-  const chunks: Array<Array<{ fullName: string; studentNo: string; qrDataUrl: string }>> = [];
-  for (let i = 0; i < items.length; i += 4) {
-    chunks.push(items.slice(i, i + 4));
-  }
-
-  const sheets = chunks
-    .map((chunk, idx) => {
-      const cards = chunk
-        .map(
-          (item) => `
-      <div class="card">
-        <img src="${item.qrDataUrl}" alt="QR code for ${escapeHtml(item.fullName)}" />
-        <div class="name">${escapeHtml(item.fullName)}</div>
-        <div class="id">ID: ${escapeHtml(item.studentNo)}</div>
-      </div>
-    `,
-        )
-        .join("");
-
-      return `
-        <section class="sheet ${idx < chunks.length - 1 ? "sheet-break" : ""}">
-          <div class="header">
-            <p class="title">${escapeHtml(title)}</p>
-            <p class="subtitle">Generated ${new Date().toLocaleString()}</p>
-          </div>
-          <div class="grid">${cards}</div>
-        </section>
-      `;
-    })
+function renderPrintWindow(
+  printWindow: Window,
+  title: string,
+  items: Array<{ fullName: string; studentNo: string; qrDataUrl: string }>,
+) {
+  const cards = items
+    .map(
+      (item) => `
+    <div class="card">
+      <img src="${item.qrDataUrl}" alt="QR code for ${escapeHtml(item.fullName)}" />
+      <div class="name">${escapeHtml(item.fullName)}</div>
+      <div class="id">ID: ${escapeHtml(item.studentNo)}</div>
+    </div>
+  `,
+    )
     .join("");
 
   printWindow.document.write(`
@@ -113,15 +98,14 @@ function renderPrintWindow(printWindow: Window, title: string, items: Array<{ fu
         <style>
           @page { size: A4; margin: 8mm; }
           body { font-family: Arial, sans-serif; margin: 0; color: #111; }
-          .sheet { min-height: calc(297mm - 16mm); }
-          .sheet-break { page-break-after: always; }
-          .header { margin-bottom: 8px; }
+          .header { margin: 0 0 8px; padding: 0 4mm; }
           .title { font-size: 16px; font-weight: 700; margin: 0; }
           .subtitle { font-size: 11px; color: #555; margin: 3px 0 0; }
           .grid {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 8mm;
+            padding: 0 4mm 8mm;
           }
           .card {
             border: 1px solid #ddd;
@@ -129,7 +113,7 @@ function renderPrintWindow(printWindow: Window, title: string, items: Array<{ fu
             padding: 6mm 4mm;
             text-align: center;
             break-inside: avoid;
-            min-height: 120mm;
+            page-break-inside: avoid;
             box-sizing: border-box;
           }
           .card img { width: 48mm; height: 48mm; display: block; margin: 0 auto 6mm; }
@@ -138,7 +122,11 @@ function renderPrintWindow(printWindow: Window, title: string, items: Array<{ fu
         </style>
       </head>
       <body>
-        ${sheets}
+        <div class="header">
+          <p class="title">${escapeHtml(title)}</p>
+          <p class="subtitle">Generated ${new Date().toLocaleString()}</p>
+        </div>
+        <div class="grid">${cards}</div>
       </body>
     </html>
   `);

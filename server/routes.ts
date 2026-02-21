@@ -206,7 +206,7 @@ function normalizeSmsDailyCap(value: unknown, fallback: number): number {
   if (!Number.isFinite(n)) return fallback;
   const normalized = Math.trunc(n);
   if (normalized === -1) return -1;
-  return Math.min(20, Math.max(1, normalized));
+  return Math.min(1000, Math.max(1, normalized));
 }
 
 function isAfterDismissalWindow(now: Date, dismissalTime: string, earlyOutWindowMinutes: number): boolean {
@@ -1249,7 +1249,8 @@ export async function registerRoutes(
           await maybeSendAttendanceSms({
             school,
             student,
-            templateType: "out_final",
+            // Use the standard check-out template for end-of-day dismissal
+            templateType: "check_out",
             eventTime: now,
             status: "present",
           });
@@ -1430,7 +1431,7 @@ export async function registerRoutes(
       if (!schoolId) return res.status(404).json({ message: "No school" });
       const payload = {
         ...req.body,
-        smsDailyCap: normalizeSmsDailyCap(req.body.smsDailyCap, 2),
+        smsDailyCap: -1,
         smsSendMode: "ALL_MOVEMENTS",
         allowMultipleScans: true,
         minScanIntervalSeconds: clampNumber(req.body.minScanIntervalSeconds, 0, 600, 120),

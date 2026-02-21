@@ -17,10 +17,45 @@
       "breakpoints": true
     },
     {
+      "idx": 2,
+      "version": "7",
+      "when": 1771114201000,
+      "tag": "0002_sms_policy_scopes",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1771114202000,
+      "tag": "0003_school_sms_billing",
+      "breakpoints": true
+    },
+    {
       "idx": 4,
       "version": "7",
       "when": 1771114203000,
       "tag": "0004_students_photo_url",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1771114204000,
+      "tag": "0005_simplified_scan_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1771114205000,
+      "tag": "0006_disable_absent_template",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1771114206000,
+      "tag": "0007_disable_out_final_template",
       "breakpoints": true
     }
   ]

@@ -22,7 +22,7 @@ export const schools = mysqlTable("schools", {
   lateTime: time("late_time").notNull().default("08:00:00"),
   cutoffTime: time("cutoff_time").notNull().default("09:00:00"),
   smsEnabled: boolean("sms_enabled").notNull().default(false),
-  smsDailyCap: int("sms_daily_cap").notNull().default(2),
+  smsDailyCap: int("sms_daily_cap").notNull().default(-1),
   smsSendMode: varchar("sms_send_mode", { length: 32 }).notNull().default("ALL_MOVEMENTS"),
   allowMultipleScans: boolean("allow_multiple_scans").notNull().default(true),
   maxBreakCyclesPerDay: int("max_break_cycles_per_day").notNull().default(2),

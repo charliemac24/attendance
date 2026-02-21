@@ -26,7 +26,6 @@ export default function SettingsSchoolPage() {
     lateTime: "08:00",
     cutoffTime: "09:00",
     smsEnabled: false,
-    smsDailyCap: 2,
     smsSendMode: "ALL_MOVEMENTS",
     allowMultipleScans: true,
     minScanIntervalSeconds: 120,
@@ -42,7 +41,6 @@ export default function SettingsSchoolPage() {
         lateTime: school.lateTime?.substring(0, 5) || "08:00",
         cutoffTime: school.cutoffTime?.substring(0, 5) || "09:00",
         smsEnabled: school.smsEnabled,
-        smsDailyCap: school.smsDailyCap ?? 2,
         smsSendMode: "ALL_MOVEMENTS",
         allowMultipleScans: true,
         minScanIntervalSeconds: school.minScanIntervalSeconds ?? 120,
@@ -145,21 +143,6 @@ export default function SettingsSchoolPage() {
                 onCheckedChange={(v) => setFormData({ ...formData, smsEnabled: v })}
                 data-testid="switch-sms-enabled"
               />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>School-wide SMS Cap (per student/day)</Label>
-                <p className="text-xs text-muted-foreground">Use <code>-1</code> for unlimited SMS per student/day.</p>
-                <Input
-                  type="number"
-                  min={-1}
-                  max={20}
-                  value={formData.smsDailyCap}
-                  onChange={(e) => setFormData({ ...formData, smsDailyCap: Number(e.target.value) })}
-                  data-testid="input-sms-daily-cap"
-                />
-              </div>
-              <div />
             </div>
             <div className="space-y-2">
               <Label>Minimum Scan Interval (seconds)</Label>
