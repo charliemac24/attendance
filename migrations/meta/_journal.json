@@ -58,5 +58,20 @@
       "tag": "0007_disable_out_final_template",
       "breakpoints": true
     }
+  ,
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1771114208000,
+      "tag": "0009_add_absent_sms_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1771114209000,
+      "tag": "0010_disable_break_templates",
+      "breakpoints": true
+    }
   ]
 }

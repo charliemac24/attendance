@@ -26,6 +26,7 @@ export default function SettingsSchoolPage() {
     lateTime: "08:00",
     cutoffTime: "09:00",
     smsEnabled: false,
+    absentSmsEnabled: false,
     smsSendMode: "ALL_MOVEMENTS",
     allowMultipleScans: true,
     minScanIntervalSeconds: 120,
@@ -41,6 +42,7 @@ export default function SettingsSchoolPage() {
         lateTime: school.lateTime?.substring(0, 5) || "08:00",
         cutoffTime: school.cutoffTime?.substring(0, 5) || "09:00",
         smsEnabled: school.smsEnabled,
+        absentSmsEnabled: school.absentSmsEnabled ?? false,
         smsSendMode: "ALL_MOVEMENTS",
         allowMultipleScans: true,
         minScanIntervalSeconds: school.minScanIntervalSeconds ?? 120,
@@ -142,6 +144,17 @@ export default function SettingsSchoolPage() {
                 checked={formData.smsEnabled}
                 onCheckedChange={(v) => setFormData({ ...formData, smsEnabled: v })}
                 data-testid="switch-sms-enabled"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <Label>Send Absent SMS</Label>
+                <p className="text-sm text-muted-foreground">Toggle daily absent notices to guardians</p>
+              </div>
+              <Switch
+                checked={formData.absentSmsEnabled}
+                onCheckedChange={(v) => setFormData({ ...formData, absentSmsEnabled: v })}
+                data-testid="switch-absent-sms-enabled"
               />
             </div>
             <div className="space-y-2">

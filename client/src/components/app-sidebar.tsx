@@ -80,7 +80,6 @@ export function AppSidebar() {
 
   const settingsItems = [
     { title: "School Settings", url: "/settings/school", icon: Settings },
-    { title: "SMS Policies", url: "/settings/sms-policies", icon: MessageSquare },
     { title: "Holidays", url: "/settings/holidays", icon: Calendar },
     { title: "SMS Templates", url: "/settings/sms-templates", icon: MessageSquare },
     { title: "SMS Logs", url: "/sms-logs", icon: MessageSquare },

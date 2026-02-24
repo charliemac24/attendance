@@ -10,7 +10,7 @@ import fs from "fs";
 import path from "path";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "./db";
-import { attendanceEvents, gradeLevels, gradeSmsPolicies, schools, sectionSmsPolicies, sections, smsLogs } from "@shared/schema";
+import { attendanceEvents, gradeLevels, schools, sections, smsLogs } from "@shared/schema";
 
 const MemoryStore = createMemoryStore(session);
 const upload = multer({ storage: multer.memoryStorage() });
@@ -222,39 +222,8 @@ async function getEffectiveSmsDailyCap(params: {
   sectionId: number | null;
   schoolCap: number;
 }): Promise<number> {
-  const baseCap = normalizeSmsDailyCap(params.schoolCap, 2);
-
-  if (params.sectionId) {
-    const [sectionPolicy] = await db
-      .select()
-      .from(sectionSmsPolicies)
-      .where(
-        and(
-          eq(sectionSmsPolicies.schoolId, params.schoolId),
-          eq(sectionSmsPolicies.sectionId, params.sectionId),
-          eq(sectionSmsPolicies.enabled, true),
-        ),
-      )
-      .limit(1);
-    if (sectionPolicy) return normalizeSmsDailyCap(sectionPolicy.dailyCap, baseCap);
-  }
-
-  if (params.gradeLevelId) {
-    const [gradePolicy] = await db
-      .select()
-      .from(gradeSmsPolicies)
-      .where(
-        and(
-          eq(gradeSmsPolicies.schoolId, params.schoolId),
-          eq(gradeSmsPolicies.gradeLevelId, params.gradeLevelId),
-          eq(gradeSmsPolicies.enabled, true),
-        ),
-      )
-      .limit(1);
-    if (gradePolicy) return normalizeSmsDailyCap(gradePolicy.dailyCap, baseCap);
-  }
-
-  return baseCap;
+  // SMS policies removed; treat as unlimited
+  return Number.POSITIVE_INFINITY;
 }
 
 async function getStudentSmsSentCountForDate(schoolId: number, studentId: number, dateIso: string): Promise<number> {
@@ -358,6 +327,18 @@ async function maybeSendAttendanceSms(args: {
   }
 
   const today = eventTime.toISOString().slice(0, 10);
+
+  // Respect per-school absent toggle: skip if disabled
+  if (templateType === "absent" && !school.absentSmsEnabled) {
+    await createSkippedSmsLog({
+      schoolId: school.id,
+      studentId: student.id,
+      templateType,
+      toPhone: student.guardianPhone,
+      reason: "Absent SMS disabled for this school",
+    });
+    return;
+  }
   const effectiveCap = await getEffectiveSmsDailyCap({
     schoolId: school.id,
     gradeLevelId: student.gradeLevelId ?? null,
@@ -1413,6 +1394,78 @@ export async function registerRoutes(
     }
   });
 
+  // Manual absent / excused
+  app.post("/api/attendance/status", requireAuth, requireRole("super_admin", "school_admin", "gate_staff"), async (req, res) => {
+    try {
+      const { studentId, status, date, note } = req.body;
+      if (!studentId || !["absent", "excused"].includes(status)) {
+        return res.status(400).json({ message: "Invalid payload" });
+      }
+
+      const student = await storage.getStudent(Number(studentId));
+      if (!student) return res.status(404).json({ message: "Student not found" });
+
+      const school = await storage.getSchool(student.schoolId);
+      if (!school) return res.status(404).json({ message: "School not found" });
+
+      const targetDate = date ? new Date(date) : new Date();
+      const isoDate = targetDate.toISOString().split("T")[0];
+
+      const existingAttendance = await storage.getDailyAttendance(student.id, isoDate);
+      if (existingAttendance && existingAttendance.status === "present") {
+        return res.status(400).json({ message: "Student already marked present" });
+      }
+
+      const now = new Date();
+      let dailyAttendanceId: number;
+
+      if (existingAttendance) {
+        await storage.updateDailyAttendance(existingAttendance.id, {
+          status,
+          markedAbsentAt: status === "absent" ? now : null,
+        });
+        dailyAttendanceId = existingAttendance.id;
+      } else {
+        const attendance = await storage.createDailyAttendance({
+          schoolId: student.schoolId,
+          studentId: student.id,
+          date: isoDate,
+          status,
+          checkInTime: null,
+          checkOutTime: null,
+          isLate: false,
+          markedAbsentAt: status === "absent" ? now : null,
+        });
+        dailyAttendanceId = attendance.id;
+      }
+
+      await storage.createAttendanceEvent({
+        schoolId: student.schoolId,
+        studentId: student.id,
+        dailyAttendanceId,
+        eventType: status === "absent" ? "manual_absent" : "manual_excused",
+        occurredAt: now,
+        performedByUserId: req.session.userId || null,
+        kioskLocationId: null,
+        meta: note ? { note } : null,
+      });
+
+      if (status === "absent") {
+        await maybeSendAttendanceSms({
+          school,
+          student,
+          templateType: "absent",
+          eventTime: now,
+          status,
+        });
+      }
+
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // Settings
   app.get("/api/settings/school", requireAuth, async (req, res) => {
     try {
@@ -1434,161 +1487,12 @@ export async function registerRoutes(
         smsDailyCap: -1,
         smsSendMode: "ALL_MOVEMENTS",
         allowMultipleScans: true,
+        absentSmsEnabled: Boolean(req.body.absentSmsEnabled),
         minScanIntervalSeconds: clampNumber(req.body.minScanIntervalSeconds, 0, 600, 120),
         earlyOutWindowMinutes: clampNumber(req.body.earlyOutWindowMinutes, 0, 180, 30),
       };
       const school = await storage.updateSchool(schoolId, payload);
       res.json(school);
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.get("/api/settings/sms-policies", requireAuth, async (req, res) => {
-    try {
-      const schoolId = await getSchoolId(req);
-      if (!schoolId) return res.status(404).json({ message: "No school context" });
-
-      const school = await storage.getSchool(schoolId);
-      if (!school) return res.status(404).json({ message: "School not found" });
-
-      const gradeRows = await db
-        .select({
-          gradeLevelId: gradeLevels.id,
-          gradeLevelName: gradeLevels.name,
-          enabled: sql<boolean>`coalesce(${gradeSmsPolicies.enabled}, false)`,
-          dailyCap: sql<number>`coalesce(${gradeSmsPolicies.dailyCap}, 2)`,
-        })
-        .from(gradeLevels)
-        .leftJoin(
-          gradeSmsPolicies,
-          and(
-            eq(gradeSmsPolicies.schoolId, schoolId),
-            eq(gradeSmsPolicies.gradeLevelId, gradeLevels.id),
-          ),
-        )
-        .where(eq(gradeLevels.schoolId, schoolId))
-        .orderBy(gradeLevels.name);
-
-      const sectionRows = await db
-        .select({
-          sectionId: sections.id,
-          sectionName: sections.name,
-          gradeLevelName: gradeLevels.name,
-          enabled: sql<boolean>`coalesce(${sectionSmsPolicies.enabled}, false)`,
-          dailyCap: sql<number>`coalesce(${sectionSmsPolicies.dailyCap}, 2)`,
-        })
-        .from(sections)
-        .leftJoin(gradeLevels, eq(sections.gradeLevelId, gradeLevels.id))
-        .leftJoin(
-          sectionSmsPolicies,
-          and(
-            eq(sectionSmsPolicies.schoolId, schoolId),
-            eq(sectionSmsPolicies.sectionId, sections.id),
-          ),
-        )
-        .where(eq(sections.schoolId, schoolId))
-        .orderBy(gradeLevels.name, sections.name);
-
-      res.json({
-        schoolPolicy: {
-          smsDailyCap: school.smsDailyCap,
-          smsSendMode: school.smsSendMode,
-          allowMultipleScans: school.allowMultipleScans,
-          maxBreakCyclesPerDay: school.maxBreakCyclesPerDay,
-          minScanIntervalSeconds: school.minScanIntervalSeconds,
-          dismissalTime: school.dismissalTime,
-          earlyOutWindowMinutes: school.earlyOutWindowMinutes,
-        },
-        gradePolicies: gradeRows.map((row) => ({
-          ...row,
-          dailyCap: normalizeSmsDailyCap(row.dailyCap, school.smsDailyCap),
-        })),
-        sectionPolicies: sectionRows.map((row) => ({
-          ...row,
-          dailyCap: normalizeSmsDailyCap(row.dailyCap, school.smsDailyCap),
-        })),
-      });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.patch("/api/settings/sms-policies/grade/:gradeLevelId", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
-    try {
-      const schoolId = await getSchoolId(req);
-      if (!schoolId) return res.status(404).json({ message: "No school context" });
-      const gradeLevelId = Number(req.params.gradeLevelId);
-      if (!Number.isFinite(gradeLevelId)) return res.status(400).json({ message: "Invalid grade level" });
-
-      const [grade] = await db
-        .select({ id: gradeLevels.id })
-        .from(gradeLevels)
-        .where(and(eq(gradeLevels.id, gradeLevelId), eq(gradeLevels.schoolId, schoolId)))
-        .limit(1);
-      if (!grade) return res.status(404).json({ message: "Grade level not found" });
-
-      const enabled = Boolean(req.body.enabled);
-      const dailyCap = normalizeSmsDailyCap(req.body.dailyCap, 2);
-
-      await db
-        .insert(gradeSmsPolicies)
-        .values({
-          schoolId,
-          gradeLevelId,
-          enabled,
-          dailyCap,
-          updatedAt: new Date(),
-        })
-        .onDuplicateKeyUpdate({
-          set: {
-            enabled,
-            dailyCap,
-            updatedAt: new Date(),
-          },
-        });
-
-      res.json({ ok: true });
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
-  });
-
-  app.patch("/api/settings/sms-policies/section/:sectionId", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
-    try {
-      const schoolId = await getSchoolId(req);
-      if (!schoolId) return res.status(404).json({ message: "No school context" });
-      const sectionId = Number(req.params.sectionId);
-      if (!Number.isFinite(sectionId)) return res.status(400).json({ message: "Invalid section" });
-
-      const [section] = await db
-        .select({ id: sections.id })
-        .from(sections)
-        .where(and(eq(sections.id, sectionId), eq(sections.schoolId, schoolId)))
-        .limit(1);
-      if (!section) return res.status(404).json({ message: "Section not found" });
-
-      const enabled = Boolean(req.body.enabled);
-      const dailyCap = normalizeSmsDailyCap(req.body.dailyCap, 2);
-
-      await db
-        .insert(sectionSmsPolicies)
-        .values({
-          schoolId,
-          sectionId,
-          enabled,
-          dailyCap,
-          updatedAt: new Date(),
-        })
-        .onDuplicateKeyUpdate({
-          set: {
-            enabled,
-            dailyCap,
-            updatedAt: new Date(),
-          },
-        });
-
-      res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }

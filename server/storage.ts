@@ -24,9 +24,9 @@ const DEFAULT_SMS_TEMPLATES: Array<{ type: string; text: string; enabled: boolea
   { type: "late", text: "[{school_name}] {student_name} arrived late at {time} on {date}.", enabled: true },
   { type: "check_out", text: "[{school_name}] {student_name} checked out at {time} on {date}.", enabled: true },
   { type: "out_final", text: "[{school_name}] {student_name} dismissed at {time} on {date}.", enabled: false },
-  { type: "break_out", text: "[{school_name}] {student_name} went out for break at {time} on {date}.", enabled: true },
-  { type: "break_in", text: "[{school_name}] {student_name} returned from break at {time} on {date}.", enabled: true },
-  { type: "early_out", text: "[{school_name}] {student_name} left early at {time} on {date}.", enabled: true },
+  { type: "break_out", text: "[{school_name}] {student_name} went out for break at {time} on {date}.", enabled: false },
+  { type: "break_in", text: "[{school_name}] {student_name} returned from break at {time} on {date}.", enabled: false },
+  { type: "early_out", text: "[{school_name}] {student_name} left early at {time} on {date}.", enabled: false },
   { type: "absent", text: "[{school_name}] {student_name} was marked absent on {date}.", enabled: false },
 ];
 

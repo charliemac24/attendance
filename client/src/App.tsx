@@ -20,7 +20,6 @@ import GateKiosksPage from "@/pages/gate-kiosks";
 import SettingsSchoolPage from "@/pages/settings-school";
 import SettingsHolidaysPage from "@/pages/settings-holidays";
 import SmsTemplatesPage from "@/pages/settings-sms-templates";
-import SettingsSmsPoliciesPage from "@/pages/settings-sms-policies";
 import SmsLogsPage from "@/pages/sms-logs";
 import SchoolsPage from "@/pages/schools";
 import ReportsPage from "@/pages/reports";
@@ -85,7 +84,6 @@ function AuthenticatedLayout() {
               <Route path="/settings/school" component={SettingsSchoolPage} />
               <Route path="/settings/holidays" component={SettingsHolidaysPage} />
               <Route path="/settings/sms-templates" component={SmsTemplatesPage} />
-              <Route path="/settings/sms-policies" component={SettingsSmsPoliciesPage} />
               <Route path="/sms-logs" component={SmsLogsPage} />
               <Route path="/schools" component={SchoolsPage} />
               <Route path="/users" component={UsersPage} />

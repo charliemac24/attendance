@@ -10,9 +10,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Search, Edit, Users, Trash2, Printer, X } from "lucide-react";
+import { Plus, Search, Edit, Users, Trash2, Printer, X, UserX, CheckCircle2 } from "lucide-react";
 import QRCode from "qrcode";
 import type { Student, GradeLevel, Section } from "@shared/schema";
 
@@ -171,6 +173,31 @@ const [formData, setFormData] = useState({
   });
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string>("");
+  const todayIso = new Date().toISOString().split("T")[0];
+  const [statusDialogOpen, setStatusDialogOpen] = useState(false);
+  const [statusForm, setStatusForm] = useState<{
+    student: StudentWithRelations | null;
+    status: "absent" | "excused";
+    date: string;
+    note: string;
+  }>({
+    student: null,
+    status: "absent",
+    date: todayIso,
+    note: "",
+  });
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
+  const allIds = students?.map((s) => s.id) ?? [];
+  const allSelected = allIds.length > 0 && selectedIds.length === allIds.length;
+  const someSelected = selectedIds.length > 0 && !allSelected;
+
+  useEffect(() => {
+    // Drop any selections that are no longer in the current list
+    if (!students) return;
+    const valid = new Set(students.map((s) => s.id));
+    setSelectedIds((prev) => prev.filter((id) => valid.has(id)));
+  }, [students]);
 
   useEffect(() => {
     if (!photoFile) {
@@ -246,10 +273,60 @@ const [formData, setFormData] = useState({
     },
   });
 
-  const confirmDelete = (student: StudentWithRelations) => {
-    setStudentToDelete(student);
-    setDeleteDialogOpen(true);
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (ids: number[]) => {
+      for (const id of ids) {
+        await apiRequest("DELETE", `/api/students/${id}`);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        predicate: (query) => (query.queryKey[0] as string)?.startsWith("/api/students"),
+      });
+      setSelectedIds([]);
+      toast({ title: "Students deleted" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+const statusMutation = useMutation({
+    mutationFn: async ({ id, status, date, note }: { id: number; status: "absent" | "excused"; date: string; note: string }) => {
+      await apiRequest("POST", "/api/attendance/status", { studentId: id, status, date, note });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        predicate: (query) => (query.queryKey[0] as string)?.startsWith("/api/students"),
+      });
+      setStatusDialogOpen(false);
+      setStatusForm({ student: null, status: "absent", date: todayIso, note: "" });
+      toast({ title: "Status saved" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const openStatusDialog = (student: StudentWithRelations, status: "absent" | "excused") => {
+    setStatusForm({ student, status, date: todayIso, note: "" });
+    setStatusDialogOpen(true);
   };
+
+  const submitStatus = () => {
+    if (!statusForm.student) return;
+    statusMutation.mutate({
+      id: statusForm.student.id,
+      status: statusForm.status,
+      date: statusForm.date,
+      note: statusForm.note,
+    });
+  };
+
+const confirmDelete = (student: StudentWithRelations) => {
+  setStudentToDelete(student);
+  setDeleteDialogOpen(true);
+};
 
 const resetForm = () => {
     setFormData({
@@ -289,6 +366,21 @@ const openEdit = (student: StudentWithRelations) => {
     setEditingStudent(null);
     resetForm();
     setDialogOpen(true);
+  };
+
+  const toggleSelectAll = (checked: boolean | "indeterminate") => {
+    if (checked) {
+      setSelectedIds(allIds);
+    } else {
+      setSelectedIds([]);
+    }
+  };
+
+  const toggleSelect = (id: number, checked: boolean | "indeterminate") => {
+    setSelectedIds((prev) => {
+      if (checked) return Array.from(new Set([...prev, id]));
+      return prev.filter((v) => v !== id);
+    });
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -356,6 +448,16 @@ const openEdit = (student: StudentWithRelations) => {
             <Printer className="h-4 w-4 mr-1" />
             {isPrinting ? "Preparing..." : "Print Filtered QR"}
           </Button>
+          {selectedIds.length > 0 && (
+            <Button
+              variant="destructive"
+              onClick={() => setBulkDeleteDialogOpen(true)}
+              disabled={bulkDeleteMutation.isPending}
+              data-testid="button-delete-selected"
+            >
+              {bulkDeleteMutation.isPending ? "Deleting..." : `Delete Selected (${selectedIds.length})`}
+            </Button>
+          )}
           <Button onClick={openCreate} data-testid="button-add-student">
             <Plus className="h-4 w-4 mr-1" />
             Add Student
@@ -391,6 +493,13 @@ const openEdit = (student: StudentWithRelations) => {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/30">
+                    <th className="w-10 text-left py-3 px-4">
+                      <Checkbox
+                        checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                        onCheckedChange={toggleSelectAll}
+                        aria-label="Select all"
+                      />
+                    </th>
                     <th className="text-left py-3 px-4 font-medium">Student</th>
                     <th className="text-left py-3 px-4 font-medium">ID</th>
                     <th className="text-left py-3 px-4 font-medium">Grade / Section</th>
@@ -402,6 +511,13 @@ const openEdit = (student: StudentWithRelations) => {
                 <tbody>
                   {students.map((student) => (
                     <tr key={student.id} className="border-b last:border-0" data-testid={`row-student-${student.id}`}>
+                      <td className="py-3 px-4">
+                        <Checkbox
+                          checked={selectedIds.includes(student.id)}
+                          onCheckedChange={(checked) => toggleSelect(student.id, checked)}
+                          aria-label={`Select ${student.firstName} ${student.lastName}`}
+                        />
+                      </td>
                       <td className="py-3 px-4 font-medium">
                         <div className="flex items-center gap-3">
                           <Avatar className="h-9 w-9">
@@ -465,6 +581,24 @@ const openEdit = (student: StudentWithRelations) => {
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => openStatusDialog(student, "absent")}
+                            title="Mark absent"
+                            data-testid={`button-absent-student-${student.id}`}
+                          >
+                            <UserX className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => openStatusDialog(student, "excused")}
+                            title="Mark excused"
+                            data-testid={`button-excused-student-${student.id}`}
+                          >
+                            <CheckCircle2 className="h-4 w-4" />
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -480,6 +614,46 @@ const openEdit = (student: StudentWithRelations) => {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={statusDialogOpen} onOpenChange={setStatusDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Mark {statusForm.status === "absent" ? "Absent" : "Excused"}</DialogTitle>
+            <DialogDescription>
+              {statusForm.student ? `${statusForm.student.firstName} ${statusForm.student.lastName}` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label htmlFor="status-date">Date</Label>
+              <Input
+                id="status-date"
+                type="date"
+                value={statusForm.date}
+                onChange={(e) => setStatusForm({ ...statusForm, date: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="status-note">Reason / Note</Label>
+              <Textarea
+                id="status-note"
+                rows={3}
+                value={statusForm.note}
+                onChange={(e) => setStatusForm({ ...statusForm, note: e.target.value })}
+                placeholder="Optional reason"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setStatusDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={submitStatus} disabled={statusMutation.isPending || !statusForm.student}>
+                {statusMutation.isPending ? "Saving..." : `Mark ${statusForm.status === "absent" ? "Absent" : "Excused"}`}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-md">
@@ -670,6 +844,30 @@ const openEdit = (student: StudentWithRelations) => {
               data-testid="button-confirm-delete-student"
             >
               {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkDeleteDialogOpen} onOpenChange={setBulkDeleteDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete Selected Students</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete {selectedIds.length} selected student{selectedIds.length === 1 ? "" : "s"}? This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setBulkDeleteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => bulkDeleteMutation.mutate(selectedIds)}
+              disabled={bulkDeleteMutation.isPending || selectedIds.length === 0}
+              data-testid="button-confirm-delete-selected"
+            >
+              {bulkDeleteMutation.isPending ? "Deleting..." : "Delete"}
             </Button>
           </div>
         </DialogContent>
