@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,7 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { ScanLine, CheckCircle, XCircle, Clock, UserCheck } from "lucide-react";
+import { ScanLine, CheckCircle, XCircle, UserCheck, Camera, CameraOff } from "lucide-react";
+import jsQR from "jsqr";
 import type { KioskLocation } from "@shared/schema";
 
 interface ScanResult {
@@ -26,10 +27,22 @@ export default function GateKiosksPage() {
   const [qrInput, setQrInput] = useState("");
   const [lastResult, setLastResult] = useState<ScanResult | null>(null);
   const [recentScans, setRecentScans] = useState<ScanResult[]>([]);
+  const [popupResult, setPopupResult] = useState<ScanResult | null>(null);
+  const [showScanPopup, setShowScanPopup] = useState(false);
+  const [cameraRunning, setCameraRunning] = useState(false);
+  const [cameraError, setCameraError] = useState<string>("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastCameraTokenRef = useRef<string>("");
+  const lastCameraTokenAtRef = useRef<number>(0);
+  const popupTimeoutRef = useRef<number | null>(null);
   const { toast } = useToast();
 
   const focusQrInput = () => {
+    if (cameraRunning) return;
     // Delay focus to the next frame so it works reliably after state updates/render.
     requestAnimationFrame(() => {
       const input = inputRef.current;
@@ -61,6 +74,16 @@ export default function GateKiosksPage() {
     onSuccess: (data: ScanResult) => {
       setLastResult(data);
       setRecentScans((prev) => [data, ...prev.slice(0, 9)]);
+      if (data.success) {
+        setPopupResult(data);
+        setShowScanPopup(true);
+        if (popupTimeoutRef.current !== null) {
+          window.clearTimeout(popupTimeoutRef.current);
+        }
+        popupTimeoutRef.current = window.setTimeout(() => {
+          setShowScanPopup(false);
+        }, 1800);
+      }
       setQrInput("");
       queryClient.invalidateQueries({
         predicate: (query) => (query.queryKey[0] as string)?.startsWith("/api/dashboard"),
@@ -78,6 +101,81 @@ export default function GateKiosksPage() {
       focusQrInput();
     },
   });
+
+  const stopCamera = useCallback(() => {
+    if (frameRef.current !== null) {
+      cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    }
+
+    const stream = streamRef.current;
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+
+    setCameraRunning(false);
+  }, []);
+
+  const handleCameraDecoded = useCallback((rawValue: string) => {
+    const qrToken = rawValue.trim();
+    if (!qrToken) return;
+
+    const now = Date.now();
+    if (qrToken === lastCameraTokenRef.current && now - lastCameraTokenAtRef.current < 1500) {
+      return;
+    }
+    if (scanMutation.isPending) return;
+
+    lastCameraTokenRef.current = qrToken;
+    lastCameraTokenAtRef.current = now;
+    setQrInput(qrToken);
+
+    if (!selectedKiosk) {
+      toast({
+        title: "Select kiosk location",
+        description: "Choose a kiosk location before scanning.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    scanMutation.mutate(qrToken);
+  }, [scanMutation, selectedKiosk, toast]);
+
+  const startCamera = useCallback(async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError("Camera is not supported in this browser.");
+      return;
+    }
+
+    try {
+      setCameraError("");
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+        },
+        audio: false,
+      });
+      streamRef.current = stream;
+
+      const video = videoRef.current;
+      if (video) {
+        video.srcObject = stream;
+        await video.play();
+      }
+
+      setCameraRunning(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to start camera.";
+      setCameraError(message);
+      setCameraRunning(false);
+    }
+  }, []);
 
   const handleScan = (e: React.FormEvent) => {
     e.preventDefault();
@@ -106,6 +204,58 @@ export default function GateKiosksPage() {
   }, []);
 
   useEffect(() => {
+    if (!cameraRunning) return;
+
+    const scanFrame = () => {
+      const video = videoRef.current;
+      if (!video) {
+        frameRef.current = requestAnimationFrame(scanFrame);
+        return;
+      }
+
+      if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.videoHeight > 0) {
+        let canvas = canvasRef.current;
+        if (!canvas) {
+          canvas = document.createElement("canvas");
+          canvasRef.current = canvas;
+        }
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (context) {
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+          const result = jsQR(imageData.data, imageData.width, imageData.height);
+          if (result?.data) {
+            handleCameraDecoded(result.data);
+          }
+        }
+      }
+
+      frameRef.current = requestAnimationFrame(scanFrame);
+    };
+
+    frameRef.current = requestAnimationFrame(scanFrame);
+    return () => {
+      if (frameRef.current !== null) {
+        cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
+    };
+  }, [cameraRunning, handleCameraDecoded]);
+
+  useEffect(() => {
+    return () => {
+      stopCamera();
+      if (popupTimeoutRef.current !== null) {
+        window.clearTimeout(popupTimeoutRef.current);
+        popupTimeoutRef.current = null;
+      }
+    };
+  }, [stopCamera]);
+
+  useEffect(() => {
     // Keep the session alive while kiosk screen is open and idle at the gate.
     const intervalId = window.setInterval(() => {
       fetch("/api/auth/me", {
@@ -122,6 +272,28 @@ export default function GateKiosksPage() {
 
   return (
     <div className="p-6 space-y-6 max-w-3xl mx-auto">
+      {showScanPopup && popupResult?.success && (
+        <div className="fixed inset-x-0 top-4 z-50 px-4 pointer-events-none" data-testid="scan-success-popup">
+          <div className="mx-auto max-w-lg rounded-xl border border-green-200 bg-white shadow-xl dark:bg-card dark:border-green-800">
+            <div className="p-4 flex items-center gap-3">
+              <div className="shrink-0">
+                <CheckCircle className="h-7 w-7 text-green-600 dark:text-green-400" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-muted-foreground">Scan Successful</p>
+                <p className="text-base font-semibold truncate">{popupResult.studentName || "Student"}</p>
+                <p className="text-sm text-muted-foreground truncate">{popupResult.message}</p>
+              </div>
+              {popupResult.action && (
+                <Badge className="no-default-hover-elevate no-default-active-elevate shrink-0">
+                  {popupResult.action}
+                </Badge>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center gap-3">
         <div className="p-2 rounded-md bg-primary/10">
           <ScanLine className="h-5 w-5 text-primary" />
@@ -177,6 +349,52 @@ export default function GateKiosksPage() {
                 </Button>
               </div>
             </form>
+
+            <div className="rounded-md border p-3 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium">Camera QR Scanner</p>
+                {cameraRunning ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={stopCamera}
+                    data-testid="button-stop-camera-scan"
+                  >
+                    <CameraOff className="h-4 w-4 mr-1" />
+                    Stop Camera
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    onClick={startCamera}
+                    disabled={!selectedKiosk}
+                    data-testid="button-start-camera-scan"
+                  >
+                    <Camera className="h-4 w-4 mr-1" />
+                    Start Camera
+                  </Button>
+                )}
+              </div>
+
+              <div className="rounded-md bg-black/90 overflow-hidden aspect-video">
+                <video
+                  ref={videoRef}
+                  className="w-full h-full object-cover"
+                  playsInline
+                  muted
+                  autoPlay
+                  data-testid="video-camera-qr"
+                />
+              </div>
+
+              {cameraError ? (
+                <p className="text-xs text-red-600 dark:text-red-400">{cameraError}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Point the camera at a student QR code on paper or mobile phone screen.
+                </p>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>

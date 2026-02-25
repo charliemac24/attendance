@@ -18,6 +18,7 @@ const photoUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
 });
+const recentScanAtByStudent = new Map<number, number>();
 
 declare module "express-session" {
   interface SessionData {
@@ -200,13 +201,24 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   return Math.min(max, Math.max(min, Math.trunc(n)));
 }
 
-// SMS cap supports -1 to mean unlimited.
-function normalizeSmsDailyCap(value: unknown, fallback: number): number {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  const normalized = Math.trunc(n);
-  if (normalized === -1) return -1;
-  return Math.min(1000, Math.max(1, normalized));
+function getDuplicateScanRemainingMs(studentId: number, nowMs: number, cooldownMs: number): number {
+  if (cooldownMs <= 0) return 0;
+  const prevMs = recentScanAtByStudent.get(studentId);
+  if (!prevMs) return 0;
+  const elapsed = nowMs - prevMs;
+  if (elapsed >= cooldownMs) return 0;
+  return cooldownMs - elapsed;
+}
+
+function markStudentScanNow(studentId: number, nowMs: number) {
+  recentScanAtByStudent.set(studentId, nowMs);
+
+  if (recentScanAtByStudent.size > 5000) {
+    const cutoff = nowMs - 5 * 60_000;
+    recentScanAtByStudent.forEach((at, id) => {
+      if (at < cutoff) recentScanAtByStudent.delete(id);
+    });
+  }
 }
 
 function isAfterDismissalWindow(now: Date, dismissalTime: string, earlyOutWindowMinutes: number): boolean {
@@ -214,32 +226,6 @@ function isAfterDismissalWindow(now: Date, dismissalTime: string, earlyOutWindow
   const dismissalMinutes = (Number(hourStr) * 60) + Number(minuteStr);
   const nowMinutes = (now.getHours() * 60) + now.getMinutes();
   return nowMinutes >= dismissalMinutes - earlyOutWindowMinutes;
-}
-
-async function getEffectiveSmsDailyCap(params: {
-  schoolId: number;
-  gradeLevelId: number | null;
-  sectionId: number | null;
-  schoolCap: number;
-}): Promise<number> {
-  // SMS policies removed; treat as unlimited
-  return Number.POSITIVE_INFINITY;
-}
-
-async function getStudentSmsSentCountForDate(schoolId: number, studentId: number, dateIso: string): Promise<number> {
-  const [row] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(smsLogs)
-    .where(
-      and(
-        eq(smsLogs.schoolId, schoolId),
-        eq(smsLogs.studentId, studentId),
-        sql`DATE(${smsLogs.createdAt}) = ${dateIso}`,
-        sql`${smsLogs.status} IN ('sent', 'queued')`,
-      ),
-    );
-
-  return Number(row?.count || 0);
 }
 
 async function getLastEventForAttendance(dailyAttendanceId: number) {
@@ -326,8 +312,6 @@ async function maybeSendAttendanceSms(args: {
     return;
   }
 
-  const today = eventTime.toISOString().slice(0, 10);
-
   // Respect per-school absent toggle: skip if disabled
   if (templateType === "absent" && !school.absentSmsEnabled) {
     await createSkippedSmsLog({
@@ -339,24 +323,6 @@ async function maybeSendAttendanceSms(args: {
     });
     return;
   }
-  const effectiveCap = await getEffectiveSmsDailyCap({
-    schoolId: school.id,
-    gradeLevelId: student.gradeLevelId ?? null,
-    sectionId: student.sectionId ?? null,
-    schoolCap: school.smsDailyCap,
-  });
-  const usedCount = await getStudentSmsSentCountForDate(school.id, student.id, today);
-  if (effectiveCap !== -1 && usedCount >= effectiveCap) {
-    await createSkippedSmsLog({
-      schoolId: school.id,
-      studentId: student.id,
-      templateType,
-      toPhone: student.guardianPhone,
-      reason: `Daily SMS cap reached (${usedCount}/${effectiveCap})`,
-    });
-    return;
-  }
-
   const templates = await storage.getSmsTemplates(school.id);
   let selectedTemplateType = templateType;
   let template = templates.find((t) => t.type === selectedTemplateType && t.enabled);
@@ -432,11 +398,52 @@ async function maybeSendAttendanceSms(args: {
   }
 }
 
+async function buildTemplateBasedKioskMessage(args: {
+  school: any;
+  student: any;
+  templateType: "check_in" | "check_out" | "late" | "absent";
+  eventTime: Date;
+  status: string;
+}): Promise<string> {
+  const { school, student, templateType, eventTime, status } = args;
+  const templates = await storage.getSmsTemplates(school.id);
+  const template = templates.find((t) => t.type === templateType);
+  const studentName = `${student.firstName} ${student.lastName}`.trim();
+
+  if (!template?.templateText) {
+    if (templateType === "late") return `${studentName} checked in (Late)`;
+    if (templateType === "check_out") return `${studentName} checked out`;
+    if (templateType === "absent") return `${studentName} was marked absent`;
+    return `${studentName} checked in`;
+  }
+
+  return renderSmsTemplate(template.templateText, {
+    school_name: school.name ?? "",
+    student_name: studentName,
+    grade_level: "",
+    section: "",
+    date: eventTime.toISOString().slice(0, 10),
+    time: eventTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    status,
+  });
+}
+
+function isLateNowForSchool(now: Date, lateTime: string): boolean {
+  const lateTimeParts = lateTime.split(":");
+  const lateHour = parseInt(lateTimeParts[0] ?? "0");
+  const lateMinute = parseInt(lateTimeParts[1] ?? "0");
+  return now.getHours() > lateHour || (now.getHours() === lateHour && now.getMinutes() > lateMinute);
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
   const sessionMaxAgeMs = Number(process.env.SESSION_MAX_AGE_MS || 7 * 24 * 60 * 60 * 1000);
+  const gateStaffSessionMaxAgeMs = 24 * 60 * 60 * 1000;
+  const applySessionLifetimeByRole = (req: Request, role: string) => {
+    req.session.cookie.maxAge = role === "gate_staff" ? gateStaffSessionMaxAgeMs : sessionMaxAgeMs;
+  };
 
   const uploadsRoot = path.resolve(process.cwd(), "uploads");
   const studentPhotoDir = path.join(uploadsRoot, "students");
@@ -488,6 +495,8 @@ export async function registerRoutes(
         req.session.schoolId = user.schoolId;
       }
 
+      applySessionLifetimeByRole(req, user.role);
+
       const { password: _, ...userWithoutPw } = user;
       res.json({ ...userWithoutPw, school, selectedSchoolId });
     } catch (err: any) {
@@ -524,6 +533,8 @@ export async function registerRoutes(
         }
       }
     }
+
+    applySessionLifetimeByRole(req, user.role);
 
     const { password: _, ...userWithoutPw } = user;
     res.json({ ...userWithoutPw, school, selectedSchoolId });
@@ -1108,12 +1119,42 @@ export async function registerRoutes(
 
       const now = new Date();
       const existingAttendance = await storage.getDailyAttendance(student.id, today);
+      const minScanIntervalSeconds = clampNumber(school.minScanIntervalSeconds, 0, 600, 120);
+      const remainingMs = getDuplicateScanRemainingMs(student.id, now.getTime(), minScanIntervalSeconds * 1000);
+      if (remainingMs > 0) {
+        // If the student is already checked out, ignore accidental immediate re-scans
+        // without surfacing a failure message or creating duplicate records/SMS.
+        if (existingAttendance?.checkOutTime || existingAttendance?.status === "present") {
+          const studentName = `${student.firstName} ${student.lastName}`;
+          const templateMessage = await buildTemplateBasedKioskMessage({
+            school,
+            student,
+            templateType: "check_out",
+            eventTime: existingAttendance.checkOutTime ? new Date(existingAttendance.checkOutTime) : now,
+            status: "present",
+          });
+          return res.json({
+            success: true,
+            message: templateMessage,
+            studentName,
+            photoUrl: student.photoUrl || null,
+            status: "present",
+            action: "Check-out",
+            time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          });
+        }
+
+        return res.json({
+          success: false,
+          message: `Please wait ${Math.ceil(remainingMs / 1000)}s before scanning this student again.`,
+          studentName: `${student.firstName} ${student.lastName}`,
+          photoUrl: student.photoUrl || null,
+        });
+      }
+      markStudentScanNow(student.id, now.getTime());
 
       if (!existingAttendance) {
-        const lateTimeParts = school.lateTime.split(":");
-        const lateHour = parseInt(lateTimeParts[0]);
-        const lateMinute = parseInt(lateTimeParts[1]);
-        const isLate = now.getHours() > lateHour || (now.getHours() === lateHour && now.getMinutes() > lateMinute);
+        const isLate = isLateNowForSchool(now, school.lateTime);
 
         const status = isLate ? "late" : "pending_checkout";
 
@@ -1146,112 +1187,35 @@ export async function registerRoutes(
         });
 
         const studentName = `${student.firstName} ${student.lastName}`;
+        const templateMessage = await buildTemplateBasedKioskMessage({
+          school,
+          student,
+          templateType: isLate ? "late" : "check_in",
+          eventTime: now,
+          status,
+        });
         return res.json({
           success: true,
-          message: isLate ? `${studentName} checked in (Late)` : `${studentName} checked in`,
+          message: templateMessage,
           studentName,
           photoUrl: student.photoUrl || null,
           status,
-          action: isLate ? "Late Check-in" : "Check-in",
+          action: isLate ? "Late Arrival" : "Check-in",
           time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         });
       }
 
       if (existingAttendance.status === "pending_checkout" || existingAttendance.status === "late") {
-        const minScanIntervalSeconds = clampNumber(school.minScanIntervalSeconds, 0, 600, 120);
-        const earlyOutWindowMinutes = clampNumber(school.earlyOutWindowMinutes, 0, 180, 30);
-        const dismissalTime = school.dismissalTime || "15:00:00";
-        const lastEvent = await getLastEventForAttendance(existingAttendance.id);
-
-        if (lastEvent?.occurredAt && minScanIntervalSeconds > 0) {
-          const diffSeconds = Math.floor((now.getTime() - new Date(lastEvent.occurredAt).getTime()) / 1000);
-          if (diffSeconds >= 0 && diffSeconds < minScanIntervalSeconds) {
-            return res.json({
-              success: false,
-              message: `Please wait ${minScanIntervalSeconds - diffSeconds}s before scanning again.`,
-              studentName: `${student.firstName} ${student.lastName}`,
-              photoUrl: student.photoUrl || null,
-            });
-          }
-        }
-
-        const studentName = `${student.firstName} ${student.lastName}`;
-        const canFinalizeCheckout = isAfterDismissalWindow(now, dismissalTime, earlyOutWindowMinutes);
-        const isReturningFromBreak = lastEvent?.eventType === "break_out" || lastEvent?.eventType === "early_out";
-
-        if (isReturningFromBreak) {
-          await storage.createAttendanceEvent({
-            schoolId,
-            studentId: student.id,
-            dailyAttendanceId: existingAttendance.id,
-            eventType: "break_in",
-            occurredAt: now,
-            performedByUserId: req.session.userId || null,
-            kioskLocationId: kioskLocationId || null,
-            meta: null,
-          });
-
-          await maybeSendAttendanceSms({
-            school,
-            student,
-            templateType: "break_in",
-            eventTime: now,
-            status: existingAttendance.status,
-          });
-
-          return res.json({
-            success: true,
-            message: `${studentName} returned from break`,
-            studentName,
-            photoUrl: student.photoUrl || null,
-            status: existingAttendance.status,
-            action: "Break In",
-            time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          });
-        }
-
-        if (canFinalizeCheckout) {
-          await storage.updateDailyAttendance(existingAttendance.id, {
-            status: "present",
-            checkOutTime: now,
-          });
-
-          await storage.createAttendanceEvent({
-            schoolId,
-            studentId: student.id,
-            dailyAttendanceId: existingAttendance.id,
-            eventType: "out_final",
-            occurredAt: now,
-            performedByUserId: req.session.userId || null,
-            kioskLocationId: kioskLocationId || null,
-            meta: null,
-          });
-
-          await maybeSendAttendanceSms({
-            school,
-            student,
-            // Use the standard check-out template for end-of-day dismissal
-            templateType: "check_out",
-            eventTime: now,
-            status: "present",
-          });
-
-          return res.json({
-            success: true,
-            message: `${studentName} checked out`,
-            studentName,
-            photoUrl: student.photoUrl || null,
-            status: "present",
-            action: "Final Out",
-            time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          });
-        }
+        await storage.updateDailyAttendance(existingAttendance.id, {
+          status: "present",
+          checkOutTime: now,
+        });
 
         await storage.createAttendanceEvent({
           schoolId,
           studentId: student.id,
           dailyAttendanceId: existingAttendance.id,
-          eventType: "early_out",
+          eventType: "out_final",
           occurredAt: now,
           performedByUserId: req.session.userId || null,
           kioskLocationId: kioskLocationId || null,
@@ -1261,18 +1225,26 @@ export async function registerRoutes(
         await maybeSendAttendanceSms({
           school,
           student,
-          templateType: "early_out",
+          templateType: "check_out",
           eventTime: now,
-          status: existingAttendance.status,
+          status: "present",
         });
 
+        const studentName = `${student.firstName} ${student.lastName}`;
+        const templateMessage = await buildTemplateBasedKioskMessage({
+          school,
+          student,
+          templateType: "check_out",
+          eventTime: now,
+          status: "present",
+        });
         return res.json({
           success: true,
-          message: `${studentName} left early`,
+          message: templateMessage,
           studentName,
           photoUrl: student.photoUrl || null,
-          status: existingAttendance.status,
-          action: "Early Out",
+          status: "present",
+          action: "Check-out",
           time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         });
       }
@@ -1289,13 +1261,20 @@ export async function registerRoutes(
       });
 
       const studentName = `${student.firstName} ${student.lastName}`;
+      const templateMessage = await buildTemplateBasedKioskMessage({
+        school,
+        student,
+        templateType: "check_out",
+        eventTime: existingAttendance.checkOutTime ? new Date(existingAttendance.checkOutTime) : now,
+        status: existingAttendance.status,
+      });
       return res.json({
         success: true,
-        message: `${studentName} - scan recorded after final out`,
+        message: templateMessage,
         studentName,
         photoUrl: student.photoUrl || null,
         status: existingAttendance.status,
-        action: "Scan Ignored",
+        action: "Check-out",
         time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       });
     } catch (err: any) {
@@ -1493,6 +1472,38 @@ export async function registerRoutes(
       };
       const school = await storage.updateSchool(schoolId, payload);
       res.json(school);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/settings/purge-logs", requireAuth, requireRole("super_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(404).json({ message: "No school" });
+
+      const date = String(req.body?.date || "").trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ message: "Invalid date. Use YYYY-MM-DD." });
+      }
+
+      const deleteAttendance = req.body?.deleteAttendance !== false;
+      const deleteSms = req.body?.deleteSms !== false;
+      if (!deleteAttendance && !deleteSms) {
+        return res.status(400).json({ message: "Nothing to purge. Select at least one log type." });
+      }
+
+      const result = await storage.purgeSchoolLogsByDate(schoolId, date, {
+        deleteAttendance,
+        deleteSms,
+      });
+
+      res.json({
+        success: true,
+        schoolId,
+        date,
+        ...result,
+      });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -1705,7 +1716,7 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json([]);
-      const { startDate, endDate, grade, section } = req.query;
+      const { startDate, endDate, grade, section, studentName, studentNo } = req.query;
 
       const allRecords = await storage.getAttendanceReport(
         schoolId,
@@ -1715,7 +1726,46 @@ export async function registerRoutes(
         section && section !== "all" ? Number(section) : undefined,
       );
 
-      res.json(allRecords.filter((r: any) => r.status === "absent"));
+      const nameFilter = String(studentName || "").trim().toLowerCase();
+      const studentNoFilter = String(studentNo || "").trim().toLowerCase();
+      const filtered = allRecords.filter((r: any) => {
+        if (r.status !== "absent") return false;
+        if (nameFilter && !String(r.studentName || "").toLowerCase().includes(nameFilter)) return false;
+        if (studentNoFilter && !String(r.studentNo || "").toLowerCase().includes(studentNoFilter)) return false;
+        return true;
+      });
+
+      res.json(filtered);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/reports/late-history", requireAuth, async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.json([]);
+      const { startDate, endDate, grade, section, studentName, studentNo } = req.query;
+
+      const allRecords = await storage.getAttendanceReport(
+        schoolId,
+        startDate as string || new Date().toISOString().split("T")[0],
+        endDate as string || new Date().toISOString().split("T")[0],
+        grade && grade !== "all" ? Number(grade) : undefined,
+        section && section !== "all" ? Number(section) : undefined,
+      );
+
+      const nameFilter = String(studentName || "").trim().toLowerCase();
+      const studentNoFilter = String(studentNo || "").trim().toLowerCase();
+
+      const filtered = allRecords.filter((r: any) => {
+        if (!r?.isLate) return false;
+        if (nameFilter && !String(r.studentName || "").toLowerCase().includes(nameFilter)) return false;
+        if (studentNoFilter && !String(r.studentNo || "").toLowerCase().includes(studentNoFilter)) return false;
+        return true;
+      });
+
+      res.json(filtered);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -1851,7 +1901,23 @@ export async function registerRoutes(
           section && section !== "all" ? Number(section) : undefined,
         );
         if (type === "absentees") {
-          data = data.filter((r: any) => r.status === "absent");
+          const nameFilter = String(req.query.studentName || "").trim().toLowerCase();
+          const studentNoFilter = String(req.query.studentNo || "").trim().toLowerCase();
+          data = data.filter((r: any) => {
+            if (r.status !== "absent") return false;
+            if (nameFilter && !String(r.studentName || "").toLowerCase().includes(nameFilter)) return false;
+            if (studentNoFilter && !String(r.studentNo || "").toLowerCase().includes(studentNoFilter)) return false;
+            return true;
+          });
+        } else if (type === "late-history") {
+          const nameFilter = String(req.query.studentName || "").trim().toLowerCase();
+          const studentNoFilter = String(req.query.studentNo || "").trim().toLowerCase();
+          data = data.filter((r: any) => {
+            if (!r?.isLate) return false;
+            if (nameFilter && !String(r.studentName || "").toLowerCase().includes(nameFilter)) return false;
+            if (studentNoFilter && !String(r.studentNo || "").toLowerCase().includes(studentNoFilter)) return false;
+            return true;
+          });
         }
       }
 

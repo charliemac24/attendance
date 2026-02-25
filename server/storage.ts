@@ -97,6 +97,11 @@ export interface IStorage {
   // SMS Logs
   getSmsLogs(schoolId: number): Promise<any[]>;
   createSmsLog(data: InsertSmsLog): Promise<SmsLog>;
+  purgeSchoolLogsByDate(
+    schoolId: number,
+    date: string,
+    options?: { deleteAttendance?: boolean; deleteSms?: boolean },
+  ): Promise<{ attendanceEventsDeleted: number; dailyAttendancesDeleted: number; smsLogsDeleted: number }>;
 
   // Holidays
   getHolidays(schoolId: number): Promise<SchoolHoliday[]>;
@@ -596,6 +601,46 @@ export class DatabaseStorage implements IStorage {
     return log!;
   }
 
+  async purgeSchoolLogsByDate(
+    schoolId: number,
+    date: string,
+    options: { deleteAttendance?: boolean; deleteSms?: boolean } = {},
+  ): Promise<{ attendanceEventsDeleted: number; dailyAttendancesDeleted: number; smsLogsDeleted: number }> {
+    const deleteAttendance = options.deleteAttendance !== false;
+    const deleteSms = options.deleteSms !== false;
+
+    let attendanceEventsDeleted = 0;
+    let dailyAttendancesDeleted = 0;
+    let smsLogsDeleted = 0;
+
+    if (deleteAttendance) {
+      const deletedEvents: any = await db.delete(attendanceEvents).where(
+        and(
+          eq(attendanceEvents.schoolId, schoolId),
+          sql`DATE(${attendanceEvents.occurredAt}) = ${date}`,
+        ),
+      );
+      attendanceEventsDeleted = Number(deletedEvents?.rowsAffected ?? deletedEvents?.affectedRows ?? 0);
+
+      const deletedDailyAttendances: any = await db.delete(dailyAttendances).where(
+        and(eq(dailyAttendances.schoolId, schoolId), eq(dailyAttendances.date, date)),
+      );
+      dailyAttendancesDeleted = Number(deletedDailyAttendances?.rowsAffected ?? deletedDailyAttendances?.affectedRows ?? 0);
+    }
+
+    if (deleteSms) {
+      const deletedSms: any = await db.delete(smsLogs).where(
+        and(
+          eq(smsLogs.schoolId, schoolId),
+          sql`DATE(${smsLogs.createdAt}) = ${date}`,
+        ),
+      );
+      smsLogsDeleted = Number(deletedSms?.rowsAffected ?? deletedSms?.affectedRows ?? 0);
+    }
+
+    return { attendanceEventsDeleted, dailyAttendancesDeleted, smsLogsDeleted };
+  }
+
   async getHolidays(schoolId: number): Promise<SchoolHoliday[]> {
     return db
       .select()
@@ -922,6 +967,7 @@ export class DatabaseStorage implements IStorage {
         checkInTime: dailyAttendances.checkInTime,
         checkOutTime: dailyAttendances.checkOutTime,
         status: dailyAttendances.status,
+        isLate: dailyAttendances.isLate,
       })
       .from(dailyAttendances)
       .innerJoin(students, eq(dailyAttendances.studentId, students.id))

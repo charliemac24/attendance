@@ -78,48 +78,6 @@ export const sections = mysqlTable(
   ]
 );
 
-export const gradeSmsPolicies = mysqlTable(
-  "grade_sms_policies",
-  {
-    id: int("id").autoincrement().primaryKey(),
-    schoolId: int("school_id")
-      .notNull()
-      .references(() => schools.id),
-    gradeLevelId: int("grade_level_id")
-      .notNull()
-      .references(() => gradeLevels.id),
-    enabled: boolean("enabled").notNull().default(false),
-    dailyCap: int("daily_cap").notNull().default(2),
-    createdAt: datetime("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: datetime("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  },
-  (table) => [
-    uniqueIndex("grade_sms_policies_school_grade_idx").on(table.schoolId, table.gradeLevelId),
-    index("grade_sms_policies_school_idx").on(table.schoolId),
-  ]
-);
-
-export const sectionSmsPolicies = mysqlTable(
-  "section_sms_policies",
-  {
-    id: int("id").autoincrement().primaryKey(),
-    schoolId: int("school_id")
-      .notNull()
-      .references(() => schools.id),
-    sectionId: int("section_id")
-      .notNull()
-      .references(() => sections.id),
-    enabled: boolean("enabled").notNull().default(false),
-    dailyCap: int("daily_cap").notNull().default(2),
-    createdAt: datetime("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: datetime("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  },
-  (table) => [
-    uniqueIndex("section_sms_policies_school_section_idx").on(table.schoolId, table.sectionId),
-    index("section_sms_policies_school_idx").on(table.schoolId),
-  ]
-);
-
 export const students = mysqlTable(
   "students",
   {
@@ -387,12 +345,6 @@ export const insertGradeLevelSchema = createInsertSchema(gradeLevels).omit({
 export const insertSectionSchema = createInsertSchema(sections).omit({
   id: true,
 });
-export const insertGradeSmsPolicySchema = createInsertSchema(gradeSmsPolicies).omit({
-  id: true,
-});
-export const insertSectionSmsPolicySchema = createInsertSchema(sectionSmsPolicies).omit({
-  id: true,
-});
 export const insertStudentSchema = createInsertSchema(students).omit({
   id: true,
 });
@@ -428,10 +380,6 @@ export type GradeLevel = typeof gradeLevels.$inferSelect;
 export type InsertGradeLevel = z.infer<typeof insertGradeLevelSchema>;
 export type Section = typeof sections.$inferSelect;
 export type InsertSection = z.infer<typeof insertSectionSchema>;
-export type GradeSmsPolicy = typeof gradeSmsPolicies.$inferSelect;
-export type InsertGradeSmsPolicy = z.infer<typeof insertGradeSmsPolicySchema>;
-export type SectionSmsPolicy = typeof sectionSmsPolicies.$inferSelect;
-export type InsertSectionSmsPolicy = z.infer<typeof insertSectionSmsPolicySchema>;
 export type Student = typeof students.$inferSelect;
 export type InsertStudent = z.infer<typeof insertStudentSchema>;
 export type KioskLocation = typeof kioskLocations.$inferSelect;

@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/status-badge";
-import { Calendar, Download, ClipboardList, FileText, MessageSquare } from "lucide-react";
+import { Calendar, Download, ClipboardList, FileText, MessageSquare, Clock } from "lucide-react";
 import { useRoute } from "wouter";
 import type { GradeLevel, Section } from "@shared/schema";
 
@@ -19,6 +19,7 @@ interface ReportRecord {
   checkInTime: string | null;
   checkOutTime: string | null;
   status: string;
+  isLate?: boolean;
 }
 
 interface SmsUsageRecord {
@@ -42,6 +43,7 @@ interface SmsBillingRecord {
 
 const reportConfig: Record<string, { title: string; icon: any; description: string }> = {
   daily: { title: "Daily Report", icon: ClipboardList, description: "Attendance records by date" },
+  "late-history": { title: "Late History", icon: Clock, description: "Track students who arrived late by date range" },
   absentees: { title: "Absentee Report", icon: FileText, description: "Students absent by date range" },
   "sms-usage": { title: "SMS Usage Report", icon: MessageSquare, description: "SMS sending statistics" },
   "sms-billing": { title: "SMS Billing Report", icon: MessageSquare, description: "Monthly included credits vs overage by school" },
@@ -62,6 +64,8 @@ export default function ReportsPage() {
   const [month, setMonth] = useState(today.slice(0, 7));
   const [gradeFilter, setGradeFilter] = useState("all");
   const [sectionFilter, setSectionFilter] = useState("all");
+  const [studentNameFilter, setStudentNameFilter] = useState("");
+  const [studentNoFilter, setStudentNoFilter] = useState("");
 
   const { data: gradeLevels } = useQuery<GradeLevel[]>({
     queryKey: ["/api/grade-levels"],
@@ -74,7 +78,7 @@ export default function ReportsPage() {
   const reportQueryUrl =
     reportType === "sms-billing"
       ? `/api/reports/sms-billing?month=${month}`
-      : `/api/reports/${reportType}?startDate=${startDate}&endDate=${endDate}&grade=${gradeFilter}&section=${sectionFilter}`;
+      : `/api/reports/${reportType}?startDate=${startDate}&endDate=${endDate}&grade=${gradeFilter}&section=${sectionFilter}&studentName=${encodeURIComponent(studentNameFilter)}&studentNo=${encodeURIComponent(studentNoFilter)}`;
 
   const { data: reportData, isLoading } = useQuery<ReportRecord[] | SmsUsageRecord[] | SmsBillingRecord[]>({
     queryKey: [reportQueryUrl],
@@ -86,7 +90,7 @@ export default function ReportsPage() {
       return;
     }
     window.open(
-      `/api/reports/${reportType}/export?startDate=${startDate}&endDate=${endDate}&grade=${gradeFilter}&section=${sectionFilter}`,
+      `/api/reports/${reportType}/export?startDate=${startDate}&endDate=${endDate}&grade=${gradeFilter}&section=${sectionFilter}&studentName=${encodeURIComponent(studentNameFilter)}&studentNo=${encodeURIComponent(studentNoFilter)}`,
       "_blank",
     );
   };
@@ -171,6 +175,24 @@ export default function ReportsPage() {
                     ))}
                   </SelectContent>
                 </Select>
+                {(reportType === "late-history" || reportType === "absentees") && (
+                  <>
+                    <Input
+                      placeholder="Student Name"
+                      value={studentNameFilter}
+                      onChange={(e) => setStudentNameFilter(e.target.value)}
+                      className="w-[220px]"
+                      data-testid="input-report-student-name"
+                    />
+                    <Input
+                      placeholder="Student ID"
+                      value={studentNoFilter}
+                      onChange={(e) => setStudentNoFilter(e.target.value)}
+                      className="w-[180px]"
+                      data-testid="input-report-student-no"
+                    />
+                  </>
+                )}
               </>
             )}
           </div>
@@ -190,7 +212,7 @@ export default function ReportsPage() {
           ) : reportType === "sms-billing" ? (
             <SmsBillingTable data={(reportData as SmsBillingRecord[]) || []} />
           ) : (
-            <AttendanceTable data={(reportData as ReportRecord[]) || []} />
+            <AttendanceTable data={(reportData as ReportRecord[]) || []} reportType={reportType} />
           )}
         </CardContent>
       </Card>
@@ -237,7 +259,7 @@ function SmsBillingTable({ data }: { data: SmsBillingRecord[] }) {
   );
 }
 
-function AttendanceTable({ data }: { data: ReportRecord[] }) {
+function AttendanceTable({ data, reportType }: { data: ReportRecord[]; reportType: string }) {
   if (data.length === 0) {
     return (
       <div className="p-12 text-center">
@@ -267,21 +289,21 @@ function AttendanceTable({ data }: { data: ReportRecord[] }) {
                 <p className="text-xs text-muted-foreground">{r.studentNo}</p>
               </td>
               <td className="py-3 px-4 text-muted-foreground">
-                {r.gradeLevel} / {r.section || "—"}
+                {r.gradeLevel} / {r.section || "-"}
               </td>
               <td className="py-3 px-4 text-muted-foreground">{r.date}</td>
               <td className="py-3 px-4">
                 {r.checkInTime
                   ? new Date(r.checkInTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                  : "—"}
+                  : "-"}
               </td>
               <td className="py-3 px-4">
                 {r.checkOutTime
                   ? new Date(r.checkOutTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                  : "—"}
+                  : "-"}
               </td>
               <td className="py-3 px-4">
-                <StatusBadge status={r.status} />
+                <StatusBadge status={reportType === "late-history" ? "late" : r.status} />
               </td>
             </tr>
           ))}

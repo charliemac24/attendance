@@ -73,6 +73,7 @@ export function AppSidebar() {
 
   const reportItems = [
     { title: "Daily Report", url: "/reports/daily", icon: ClipboardList },
+    { title: "Late History", url: "/reports/late-history", icon: Clock },
     { title: "Absentees", url: "/reports/absentees", icon: FileText },
     { title: "SMS Usage", url: "/reports/sms-usage", icon: MessageSquare },
     ...(user?.role === "super_admin" ? [{ title: "SMS Billing", url: "/reports/sms-billing", icon: MessageSquare }] : []),
