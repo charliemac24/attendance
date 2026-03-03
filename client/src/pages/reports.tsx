@@ -1,16 +1,20 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/status-badge";
-import { Calendar, Download, ClipboardList, FileText, MessageSquare, Clock } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { Calendar, Download, ClipboardList, FileText, MessageSquare, Clock, Trash2 } from "lucide-react";
 import { useRoute } from "wouter";
 import type { GradeLevel, Section } from "@shared/schema";
 
 interface ReportRecord {
+  attendanceId?: number;
   studentName: string;
   studentNo: string;
   gradeLevel: string;
@@ -54,6 +58,8 @@ export default function ReportsPage() {
   const reportType = params?.type || "daily";
   const config = reportConfig[reportType] || reportConfig.daily;
   const Icon = config.icon;
+  const { user } = useAuth();
+  const { toast } = useToast();
 
   const today = new Date().toISOString().split("T")[0];
   const startOfMonth = new Date();
@@ -82,6 +88,19 @@ export default function ReportsPage() {
 
   const { data: reportData, isLoading } = useQuery<ReportRecord[] | SmsUsageRecord[] | SmsBillingRecord[]>({
     queryKey: [reportQueryUrl],
+  });
+
+  const deleteAttendanceMutation = useMutation({
+    mutationFn: async (attendanceId: number) => {
+      await apiRequest("DELETE", `/api/reports/attendance/${attendanceId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [reportQueryUrl] });
+      toast({ title: "History record deleted" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
   });
 
   const handleExport = () => {
@@ -212,7 +231,16 @@ export default function ReportsPage() {
           ) : reportType === "sms-billing" ? (
             <SmsBillingTable data={(reportData as SmsBillingRecord[]) || []} />
           ) : (
-            <AttendanceTable data={(reportData as ReportRecord[]) || []} reportType={reportType} />
+            <AttendanceTable
+              data={(reportData as ReportRecord[]) || []}
+              reportType={reportType}
+              canDeleteHistory={
+                user?.role === "super_admin" &&
+                (reportType === "late-history" || reportType === "absentees")
+              }
+              onDeleteRecord={(attendanceId) => deleteAttendanceMutation.mutate(attendanceId)}
+              isDeleting={deleteAttendanceMutation.isPending}
+            />
           )}
         </CardContent>
       </Card>
@@ -259,7 +287,19 @@ function SmsBillingTable({ data }: { data: SmsBillingRecord[] }) {
   );
 }
 
-function AttendanceTable({ data, reportType }: { data: ReportRecord[]; reportType: string }) {
+function AttendanceTable({
+  data,
+  reportType,
+  canDeleteHistory,
+  onDeleteRecord,
+  isDeleting,
+}: {
+  data: ReportRecord[];
+  reportType: string;
+  canDeleteHistory: boolean;
+  onDeleteRecord: (attendanceId: number) => void;
+  isDeleting: boolean;
+}) {
   if (data.length === 0) {
     return (
       <div className="p-12 text-center">
@@ -279,11 +319,12 @@ function AttendanceTable({ data, reportType }: { data: ReportRecord[]; reportTyp
             <th className="text-left py-3 px-4 font-medium">Check-in</th>
             <th className="text-left py-3 px-4 font-medium">Check-out</th>
             <th className="text-left py-3 px-4 font-medium">Status</th>
+            {canDeleteHistory && <th className="text-right py-3 px-4 font-medium">Actions</th>}
           </tr>
         </thead>
         <tbody>
           {data.map((r, i) => (
-            <tr key={i} className="border-b last:border-0">
+            <tr key={r.attendanceId ?? i} className="border-b last:border-0">
               <td className="py-3 px-4">
                 <p className="font-medium">{r.studentName}</p>
                 <p className="text-xs text-muted-foreground">{r.studentNo}</p>
@@ -305,6 +346,25 @@ function AttendanceTable({ data, reportType }: { data: ReportRecord[]; reportTyp
               <td className="py-3 px-4">
                 <StatusBadge status={reportType === "late-history" ? "late" : r.status} />
               </td>
+              {canDeleteHistory && (
+                <td className="py-3 px-4 text-right">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    disabled={isDeleting || !r.attendanceId}
+                    onClick={() => {
+                      if (!r.attendanceId) return;
+                      const ok = window.confirm(
+                        `Delete this ${reportType === "late-history" ? "late" : "absentee"} history record for ${r.studentName} on ${r.date}?`,
+                      );
+                      if (ok) onDeleteRecord(r.attendanceId);
+                    }}
+                    data-testid={r.attendanceId ? `button-delete-history-${r.attendanceId}` : undefined}
+                  >
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </Button>
+                </td>
+              )}
             </tr>
           ))}
         </tbody>

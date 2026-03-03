@@ -1771,6 +1771,24 @@ export async function registerRoutes(
     }
   });
 
+  app.delete("/api/reports/attendance/:id", requireAuth, requireRole("super_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(404).json({ message: "No school" });
+
+      const attendanceId = Number(req.params.id);
+      if (!Number.isInteger(attendanceId) || attendanceId <= 0) {
+        return res.status(400).json({ message: "Invalid attendance id" });
+      }
+
+      const deleted = await storage.deleteAttendanceById(schoolId, attendanceId);
+      if (!deleted) return res.status(404).json({ message: "Attendance record not found" });
+      return res.json({ ok: true });
+    } catch (err: any) {
+      return res.status(500).json({ message: err.message });
+    }
+  });
+
   app.get("/api/reports/sms-usage", requireAuth, async (req, res) => {
     try {
       const schoolId = await getSchoolId(req);

@@ -83,6 +83,7 @@ export interface IStorage {
   getDailyAttendance(studentId: number, date: string): Promise<DailyAttendance | undefined>;
   createDailyAttendance(data: InsertDailyAttendance): Promise<DailyAttendance>;
   updateDailyAttendance(id: number, data: Partial<InsertDailyAttendance>): Promise<DailyAttendance | undefined>;
+  deleteAttendanceById(schoolId: number, attendanceId: number): Promise<boolean>;
   getAttendancesBySchoolAndDate(schoolId: number, date: string, status?: string): Promise<any[]>;
   getStudentsNotCheckedIn(schoolId: number, date: string, search?: string, gradeId?: number, sectionId?: number, page?: number, pageSize?: number): Promise<{ records: any[]; total: number }>;
 
@@ -428,6 +429,19 @@ export class DatabaseStorage implements IStorage {
     await db.update(dailyAttendances).set(data).where(eq(dailyAttendances.id, id));
     const [da] = await db.select().from(dailyAttendances).where(eq(dailyAttendances.id, id));
     return da;
+  }
+
+  async deleteAttendanceById(schoolId: number, attendanceId: number): Promise<boolean> {
+    const [existing] = await db
+      .select({ id: dailyAttendances.id })
+      .from(dailyAttendances)
+      .where(and(eq(dailyAttendances.id, attendanceId), eq(dailyAttendances.schoolId, schoolId)));
+
+    if (!existing) return false;
+
+    await db.delete(attendanceEvents).where(eq(attendanceEvents.dailyAttendanceId, attendanceId));
+    await db.delete(dailyAttendances).where(eq(dailyAttendances.id, attendanceId));
+    return true;
   }
 
   async getAttendancesBySchoolAndDate(schoolId: number, date: string, status?: string): Promise<any[]> {
@@ -959,6 +973,7 @@ export class DatabaseStorage implements IStorage {
 
     const records = await db
       .select({
+        attendanceId: dailyAttendances.id,
         studentName: sql<string>`CONCAT(${students.firstName}, ' ', ${students.lastName})`,
         studentNo: students.studentNo,
         gradeLevel: gradeLevels.name,
