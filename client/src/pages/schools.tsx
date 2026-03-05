@@ -178,7 +178,7 @@ export default function SchoolsPage() {
                   <div className="min-w-0">
                     <p className="font-medium">{school.name}</p>
                     <p className="text-xs text-muted-foreground">
-                      {school.timezone} | Late: {school.lateTime} | Cutoff: {school.cutoffTime}
+                      {school.timezone} | Late: {school.lateTime}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       Monthly Credits: {school.monthlySmsCredits} | Overage: PHP {(school.smsOverageRateCents / 100).toFixed(2)}/SMS
@@ -292,23 +292,13 @@ export default function SchoolsPage() {
                 data-testid="input-school-timezone"
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label>Late Time</Label>
-                <Input
-                  type="time"
-                  value={formData.lateTime}
-                  onChange={(e) => setFormData({ ...formData, lateTime: e.target.value })}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Cutoff Time</Label>
-                <Input
-                  type="time"
-                  value={formData.cutoffTime}
-                  onChange={(e) => setFormData({ ...formData, cutoffTime: e.target.value })}
-                />
-              </div>
+            <div className="space-y-2">
+              <Label>Late Time</Label>
+              <Input
+                type="time"
+                value={formData.lateTime}
+                onChange={(e) => setFormData({ ...formData, lateTime: e.target.value })}
+              />
             </div>
             <div className="flex items-center justify-between gap-2">
               <Label>SMS Enabled</Label>

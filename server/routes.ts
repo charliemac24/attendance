@@ -428,11 +428,44 @@ async function buildTemplateBasedKioskMessage(args: {
   });
 }
 
-function isLateNowForSchool(now: Date, lateTime: string): boolean {
+function getTimePartsInTimezone(date: Date, timezone?: string): { hour: number; minute: number } {
+  if (!timezone) {
+    return { hour: date.getHours(), minute: date.getMinutes() };
+  }
+
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(date);
+    const hour = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10);
+    const minute = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10);
+    return { hour, minute };
+  } catch {
+    return { hour: date.getHours(), minute: date.getMinutes() };
+  }
+}
+
+function isLateNowForSchool(now: Date, lateTime: string, timezone?: string): boolean {
   const lateTimeParts = lateTime.split(":");
-  const lateHour = parseInt(lateTimeParts[0] ?? "0");
-  const lateMinute = parseInt(lateTimeParts[1] ?? "0");
-  return now.getHours() > lateHour || (now.getHours() === lateHour && now.getMinutes() > lateMinute);
+  const lateHour = parseInt(lateTimeParts[0] ?? "0", 10);
+  const lateMinute = parseInt(lateTimeParts[1] ?? "0", 10);
+  const { hour, minute } = getTimePartsInTimezone(now, timezone);
+  return hour > lateHour || (hour === lateHour && minute > lateMinute);
+}
+
+function normalizeDailyReportStatuses(records: any[]): any[] {
+  return records.map((r: any) => {
+    const hasCheckIn = Boolean(r?.checkInTime);
+    const hasCheckOut = Boolean(r?.checkOutTime);
+    const isAbsentLike = r?.status === "absent" || r?.status === "excused";
+    if (hasCheckIn && !hasCheckOut && !isAbsentLike) {
+      return { ...r, status: "pending_checkout" };
+    }
+    return r;
+  });
 }
 
 export async function registerRoutes(
@@ -718,6 +751,8 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json({ records: [], total: 0, page: 1, pageSize: 20 });
+      const school = await storage.getSchool(schoolId);
+      if (!school) return res.json({ records: [], total: 0, page: 1, pageSize: 20 });
 
       const { status } = req.params;
       const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
@@ -737,8 +772,37 @@ export async function registerRoutes(
         return res.json({ ...result, page, pageSize });
       }
 
-      const dbStatus = status === "pending_checkout" ? "pending_checkout" : (status as string);
-      let records = await storage.getAttendancesBySchoolAndDate(schoolId, date, dbStatus);
+      let records: any[] = [];
+      if (status === "pending_checkout" || status === "late") {
+        // Backfill old pending records that should have been marked late.
+        const pendingForDay = await storage.getAttendancesBySchoolAndDate(schoolId, date, "pending_checkout");
+        const staleLateRows = pendingForDay.filter(
+          (row: any) =>
+            !row.isLate &&
+            row.checkInTime &&
+            isLateNowForSchool(new Date(row.checkInTime), school.lateTime, school.timezone),
+        );
+        if (staleLateRows.length > 0) {
+          await Promise.all(
+            staleLateRows.map((row: any) =>
+              storage.updateDailyAttendance(row.id, {
+                status: "late",
+                isLate: true,
+              }),
+            ),
+          );
+        }
+      }
+
+      if (status === "pending_checkout") {
+        const [pendingRecords, lateRecords] = await Promise.all([
+          storage.getAttendancesBySchoolAndDate(schoolId, date, "pending_checkout"),
+          storage.getAttendancesBySchoolAndDate(schoolId, date, "late"),
+        ]);
+        records = [...pendingRecords, ...lateRecords];
+      } else {
+        records = await storage.getAttendancesBySchoolAndDate(schoolId, date, status as string);
+      }
 
       if (search) {
         const s = search.toLowerCase();
@@ -1154,7 +1218,7 @@ export async function registerRoutes(
       markStudentScanNow(student.id, now.getTime());
 
       if (!existingAttendance) {
-        const isLate = isLateNowForSchool(now, school.lateTime);
+        const isLate = isLateNowForSchool(now, school.lateTime, school.timezone);
 
         const status = isLate ? "late" : "pending_checkout";
 
@@ -1305,20 +1369,23 @@ export async function registerRoutes(
           return res.status(400).json({ message: "Student already has attendance for today" });
         }
 
+        const isLate = isLateNowForSchool(now, school.lateTime, school.timezone);
+        const status = isLate ? "late" : "pending_checkout";
+
         const attendance = await storage.createDailyAttendance({
           schoolId,
           studentId: student.id,
           date: today,
-          status: "pending_checkout",
+          status,
           checkInTime: now,
-          isLate: false,
+          isLate,
         });
 
         await storage.createAttendanceEvent({
           schoolId,
           studentId: student.id,
           dailyAttendanceId: attendance.id,
-          eventType: "manual_check_in",
+          eventType: isLate ? "late_check_in" : "manual_check_in",
           occurredAt: now,
           performedByUserId: req.session.userId || null,
           meta: null,
@@ -1327,12 +1394,16 @@ export async function registerRoutes(
         await maybeSendAttendanceSms({
           school,
           student,
-          templateType: "check_in",
+          templateType: isLate ? "late" : "check_in",
           eventTime: now,
-          status: "pending_checkout",
+          status,
         });
 
-        return res.json({ success: true, message: "Manual check-in recorded" });
+        return res.json({
+          success: true,
+          message: isLate ? "Manual check-in recorded as late" : "Manual check-in recorded",
+          status,
+        });
       }
 
       if (action === "check_out") {
@@ -1700,13 +1771,14 @@ export async function registerRoutes(
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json([]);
       const { startDate, endDate, grade, section } = req.query;
-      res.json(await storage.getAttendanceReport(
+      const records = await storage.getAttendanceReport(
         schoolId,
         startDate as string || new Date().toISOString().split("T")[0],
         endDate as string || new Date().toISOString().split("T")[0],
         grade && grade !== "all" ? Number(grade) : undefined,
         section && section !== "all" ? Number(section) : undefined,
-      ));
+      );
+      res.json(normalizeDailyReportStatuses(records));
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -1918,7 +1990,9 @@ export async function registerRoutes(
           grade && grade !== "all" ? Number(grade) : undefined,
           section && section !== "all" ? Number(section) : undefined,
         );
-        if (type === "absentees") {
+        if (type === "daily") {
+          data = normalizeDailyReportStatuses(data);
+        } else if (type === "absentees") {
           const nameFilter = String(req.query.studentName || "").trim().toLowerCase();
           const studentNoFilter = String(req.query.studentNo || "").trim().toLowerCase();
           data = data.filter((r: any) => {

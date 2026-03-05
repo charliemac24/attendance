@@ -140,25 +140,14 @@ export default function SettingsSchoolPage() {
                 data-testid="input-timezone"
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Late Time</Label>
-                <Input
-                  type="time"
-                  value={formData.lateTime}
-                  onChange={(e) => setFormData({ ...formData, lateTime: e.target.value })}
-                  data-testid="input-late-time"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Cutoff Time</Label>
-                <Input
-                  type="time"
-                  value={formData.cutoffTime}
-                  onChange={(e) => setFormData({ ...formData, cutoffTime: e.target.value })}
-                  data-testid="input-cutoff-time"
-                />
-              </div>
+            <div className="space-y-2">
+              <Label>Late Time</Label>
+              <Input
+                type="time"
+                value={formData.lateTime}
+                onChange={(e) => setFormData({ ...formData, lateTime: e.target.value })}
+                data-testid="input-late-time"
+              />
             </div>
             <div className="flex items-center justify-between gap-2">
               <div>
@@ -169,17 +158,6 @@ export default function SettingsSchoolPage() {
                 checked={formData.smsEnabled}
                 onCheckedChange={(v) => setFormData({ ...formData, smsEnabled: v })}
                 data-testid="switch-sms-enabled"
-              />
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <Label>Send Absent SMS</Label>
-                <p className="text-sm text-muted-foreground">Toggle daily absent notices to guardians</p>
-              </div>
-              <Switch
-                checked={formData.absentSmsEnabled}
-                onCheckedChange={(v) => setFormData({ ...formData, absentSmsEnabled: v })}
-                data-testid="switch-absent-sms-enabled"
               />
             </div>
             <div className="space-y-2">

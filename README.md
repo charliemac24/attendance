@@ -68,6 +68,30 @@ PORT=5000
 - Start (prod build): `npm run start`
 - Migrate: `npx drizzle-kit migrate`
 
+## Run with Docker Desktop (Windows)
+From `C:\Users\Charlie\Desktop\Github\attendance`:
+
+1. Start Docker Desktop.
+2. Build and run:
+   ```powershell
+   docker compose up --build -d
+   ```
+3. Open the app: `http://localhost:5000`
+4. View logs:
+   ```powershell
+   docker compose logs -f app
+   ```
+5. Stop:
+   ```powershell
+   docker compose down
+   ```
+
+Notes:
+- MySQL runs in Docker at `db:3306` for the app and `localhost:3306` from Windows.
+- App startup runs DB migrations automatically before launching.
+- Database data is persisted in Docker volume `mysql_data`.
+- Student uploads are persisted in local folder `./uploads`.
+
 ## API quick list (main)
 - Auth: `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
 - Students: list/create/update/delete, photo upload, import preview/confirm
