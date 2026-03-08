@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/status-badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { localIsoDate } from "@/lib/utils";
 import {
   Calendar,
   Search,
@@ -57,7 +58,7 @@ export default function TodayStatusPage() {
   const Icon = config.icon;
 
   const urlParams = new URLSearchParams(window.location.search);
-  const initialDate = urlParams.get("date") || new Date().toISOString().split("T")[0];
+  const initialDate = urlParams.get("date") || localIsoDate();
 
   const [selectedDate, setSelectedDate] = useState(initialDate);
   const [search, setSearch] = useState("");
@@ -105,14 +106,14 @@ export default function TodayStatusPage() {
   });
 
   const setToday = () => {
-    const d = new Date().toISOString().split("T")[0];
+    const d = localIsoDate();
     setSelectedDate(d);
     setPage(1);
   };
   const setYesterday = () => {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    setSelectedDate(d.toISOString().split("T")[0]);
+    setSelectedDate(d.toLocaleDateString("en-CA", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }));
     setPage(1);
   };
 

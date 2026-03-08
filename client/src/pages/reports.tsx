@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/status-badge";
+import { localIsoDate } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -61,10 +62,11 @@ export default function ReportsPage() {
   const { user } = useAuth();
   const { toast } = useToast();
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = localIsoDate();
   const startOfMonth = new Date();
   startOfMonth.setDate(1);
-  const defaultStartDate = startOfMonth.toISOString().split("T")[0];
+  const defaultStartDate = startOfMonth
+    .toLocaleDateString("en-CA", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
   const [startDate, setStartDate] = useState(defaultStartDate);
   const [endDate, setEndDate] = useState(today);
   const [month, setMonth] = useState(today.slice(0, 7));
@@ -338,14 +340,22 @@ function AttendanceTable({
                   ? new Date(r.checkInTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
                   : "-"}
               </td>
-              <td className="py-3 px-4">
-                {r.checkOutTime
-                  ? new Date(r.checkOutTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                  : "-"}
-              </td>
-              <td className="py-3 px-4">
-                <StatusBadge status={reportType === "late-history" ? "late" : r.status} />
-              </td>
+          <td className="py-3 px-4">
+            {r.checkOutTime
+              ? new Date(r.checkOutTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+              : "-"}
+          </td>
+          <td className="py-3 px-4">
+            <StatusBadge
+              status={
+                reportType === "late-history"
+                  ? r.checkOutTime
+                    ? "late"
+                    : "pending_checkout"
+                  : r.status
+              }
+            />
+          </td>
               {canDeleteHistory && (
                 <td className="py-3 px-4 text-right">
                   <Button

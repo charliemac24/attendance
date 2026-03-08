@@ -15,6 +15,7 @@ import {
   ArrowRight,
   Calendar,
 } from "lucide-react";
+import { localIsoDate } from "@/lib/utils";
 
 interface DashboardData {
   date: string;
@@ -60,7 +61,7 @@ interface AttendanceIntelligenceData {
 
 export default function DashboardPage() {
   const [selectedDate, setSelectedDate] = useState(
-    new Date().toISOString().split("T")[0]
+    localIsoDate()
   );
 
   const { data, isLoading } = useQuery<DashboardData>({
@@ -120,11 +121,11 @@ export default function DashboardPage() {
     },
   ];
 
-  const setToday = () => setSelectedDate(new Date().toISOString().split("T")[0]);
+  const setToday = () => setSelectedDate(new Date().toLocaleDateString("en-CA", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }));
   const setYesterday = () => {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    setSelectedDate(d.toISOString().split("T")[0]);
+    setSelectedDate(d.toLocaleDateString("en-CA", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }));
   };
 
   return (

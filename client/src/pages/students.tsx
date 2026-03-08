@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { localIsoDate } from "@/lib/utils";
 import { Plus, Search, Edit, Users, Trash2, Printer, X, UserX, CheckCircle2 } from "lucide-react";
 import QRCode from "qrcode";
 import type { Student, GradeLevel, Section } from "@shared/schema";
@@ -173,7 +174,7 @@ const [formData, setFormData] = useState({
   });
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string>("");
-  const todayIso = new Date().toISOString().split("T")[0];
+  const todayIso = localIsoDate();
   const [statusDialogOpen, setStatusDialogOpen] = useState(false);
   const [statusForm, setStatusForm] = useState<{
     student: StudentWithRelations | null;
