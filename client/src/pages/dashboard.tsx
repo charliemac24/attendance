@@ -9,9 +9,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   UserCheck,
   Clock,
-  AlertTriangle,
-  UserX,
-  HelpCircle,
   ArrowRight,
   Calendar,
 } from "lucide-react";
@@ -95,30 +92,6 @@ export default function DashboardPage() {
       bgColor: "bg-amber-50 dark:bg-amber-950/30",
       href: `/today/late?date=${selectedDate}`,
     },
-    {
-      label: "Pending Checkout",
-      value: data?.kpis.pendingCheckout ?? 0,
-      icon: AlertTriangle,
-      color: "text-blue-600 dark:text-blue-400",
-      bgColor: "bg-blue-50 dark:bg-blue-950/30",
-      href: `/today/pending-checkout?date=${selectedDate}`,
-    },
-    {
-      label: "Absent",
-      value: data?.kpis.absent ?? 0,
-      icon: UserX,
-      color: "text-red-600 dark:text-red-400",
-      bgColor: "bg-red-50 dark:bg-red-950/30",
-      href: `/today/absent?date=${selectedDate}`,
-    },
-    {
-      label: "Not Checked In",
-      value: data?.kpis.notCheckedIn ?? 0,
-      icon: HelpCircle,
-      color: "text-muted-foreground",
-      bgColor: "bg-muted/50",
-      href: `/today/not-checked-in-yet?date=${selectedDate}`,
-    },
   ];
 
   const setToday = () => setSelectedDate(new Date().toLocaleDateString("en-CA", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }));
@@ -159,9 +132,9 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 gap-4">
         {isLoading
-          ? Array.from({ length: 5 }).map((_, i) => (
+          ? Array.from({ length: 2 }).map((_, i) => (
               <Card key={i}>
                 <CardContent className="p-4">
                   <Skeleton className="h-12 w-full" />
@@ -190,8 +163,9 @@ export default function DashboardPage() {
       </div>
 
       {data?.kpis.total !== undefined && (
-        <div className="text-sm text-muted-foreground">
-          Total active students: <span className="font-medium text-foreground">{data.kpis.total}</span>
+        <div className="flex items-baseline gap-2 text-lg">
+          <span className="text-muted-foreground font-semibold">Total active students:</span>
+          <span className="text-3xl font-black text-foreground leading-none">{data.kpis.total}</span>
         </div>
       )}
 

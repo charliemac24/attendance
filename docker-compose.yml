@@ -22,6 +22,16 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    develop:
+      watch:
+        - path: .
+          action: rebuild
+          ignore:
+            - node_modules/**
+            - dist/**
+            - release/**
+            - uploads/**
+            - docker-compose.yml
     depends_on:
       db:
         condition: service_healthy

@@ -10,7 +10,8 @@
     "check": "tsc",
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "docker:watch": "chokidar \"client/src/**\" \"server/**\" \"shared/**\" \"migrations/**\" \"package.json\" \"package-lock.json\" \"Dockerfile\" \"docker-compose.yml\" --ignore \"**/node_modules/**\" --ignore \"**/dist/**\" --ignore \"release/**\" --ignore \"uploads/**\" -c \"docker compose up -d --build app\""
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -102,6 +103,7 @@
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.20",
+    "chokidar-cli": "^3.0.0",
     "cross-env": "^10.1.0",
     "drizzle-kit": "^0.31.9",
     "esbuild": "^0.25.0",
@@ -115,8 +117,5 @@
     "drizzle-kit": {
       "@esbuild-kit/esm-loader": "npm:tsx@^4.20.4"
     }
-  },
-  "optionalDependencies": {
-    "bufferutil": "^4.0.8"
   }
 }

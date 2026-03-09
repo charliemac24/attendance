@@ -84,6 +84,26 @@ function renderSmsTemplate(template: string, variables: Record<string, string>):
   });
 }
 
+function getTodayIsoInTimezone(timezone?: string): string {
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+function formatIsoInTimezone(date: Date, timezone?: string): string {
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
 function hasNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -348,7 +368,7 @@ async function maybeSendAttendanceSms(args: {
     student_name: studentName,
     grade_level: "",
     section: "",
-    date: eventTime.toISOString().slice(0, 10),
+    date: formatIsoInTimezone(eventTime, school.timezone),
     time: eventTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     status,
   });
@@ -714,7 +734,8 @@ export async function registerRoutes(
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json({ date: "", kpis: { present: 0, late: 0, pendingCheckout: 0, absent: 0, notCheckedIn: 0, total: 0 }, recentEvents: [], sectionBreakdown: [] });
 
-      const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
+      const school = await storage.getSchool(schoolId);
+      const date = (req.query.date as string) || getTodayIsoInTimezone(school?.timezone);
       const kpis = await storage.getDashboardKpis(schoolId, date);
       const recentEvents = await storage.getRecentEvents(schoolId, 10);
       const sectionBreakdown = await storage.getSectionBreakdown(schoolId, date);
@@ -738,7 +759,8 @@ export async function registerRoutes(
         });
       }
 
-      const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
+      const school = await storage.getSchool(schoolId);
+      const date = (req.query.date as string) || getTodayIsoInTimezone(school?.timezone);
       const intelligence = await storage.getAttendanceIntelligence(schoolId, date);
       res.json(intelligence);
     } catch (err: any) {
@@ -755,7 +777,7 @@ export async function registerRoutes(
       if (!school) return res.json({ records: [], total: 0, page: 1, pageSize: 20 });
 
       const { status } = req.params;
-      const date = (req.query.date as string) || new Date().toISOString().split("T")[0];
+      const date = (req.query.date as string) || getTodayIsoInTimezone(school.timezone);
       const search = req.query.search as string;
       const gradeFilter = req.query.grade as string;
       const sectionFilter = req.query.section as string;
@@ -1170,7 +1192,7 @@ export async function registerRoutes(
         return res.json({ success: false, message: "School not found." });
       }
 
-      const today = new Date().toISOString().split("T")[0];
+      const today = getTodayIsoInTimezone(school.timezone);
       const isHoliday = await storage.isHoliday(schoolId, today);
       if (isHoliday) {
         return res.json({
@@ -1356,7 +1378,7 @@ export async function registerRoutes(
       const schoolId = student.schoolId;
       const school = await storage.getSchool(schoolId);
       if (!school) return res.status(404).json({ message: "School not found" });
-      const today = new Date().toISOString().split("T")[0];
+      const today = getTodayIsoInTimezone(school.timezone);
       const isHoliday = await storage.isHoliday(schoolId, today);
       if (isHoliday) {
         return res.status(400).json({ message: "No classes today (holiday). Manual attendance is disabled." });
@@ -1459,7 +1481,7 @@ export async function registerRoutes(
       if (!school) return res.status(404).json({ message: "School not found" });
 
       const targetDate = date ? new Date(date) : new Date();
-      const isoDate = targetDate.toISOString().split("T")[0];
+      const isoDate = formatIsoInTimezone(targetDate, school.timezone);
 
       const existingAttendance = await storage.getDailyAttendance(student.id, isoDate);
       if (existingAttendance && existingAttendance.status === "present") {
