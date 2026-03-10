@@ -104,6 +104,39 @@ function formatIsoInTimezone(date: Date, timezone?: string): string {
   }).format(date);
 }
 
+function formatDateTimeInTimezone(date: Date, timezone?: string): string {
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "00";
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+}
+
+function dateTimeInTimezoneAsDate(date: Date, timezone?: string): Date {
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const getNum = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+  return new Date(Date.UTC(getNum("year"), getNum("month") - 1, getNum("day"), getNum("hour"), getNum("minute"), getNum("second")));
+}
+
 function hasNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -822,6 +855,8 @@ export async function registerRoutes(
           storage.getAttendancesBySchoolAndDate(schoolId, date, "late"),
         ]);
         records = [...pendingRecords, ...lateRecords];
+      } else if (status === "present") {
+        records = await storage.getAttendancesBySchoolAndDate(schoolId, date, ["present", "late", "pending_checkout"]);
       } else {
         records = await storage.getAttendancesBySchoolAndDate(schoolId, date, status as string);
       }
@@ -1204,6 +1239,7 @@ export async function registerRoutes(
       }
 
       const now = new Date();
+      const nowLocal = dateTimeInTimezoneAsDate(now, school.timezone);
       const existingAttendance = await storage.getDailyAttendance(student.id, today);
       const minScanIntervalSeconds = clampNumber(school.minScanIntervalSeconds, 0, 600, 120);
       const remainingMs = getDuplicateScanRemainingMs(student.id, now.getTime(), minScanIntervalSeconds * 1000);
@@ -1249,7 +1285,7 @@ export async function registerRoutes(
           studentId: student.id,
           date: today,
           status,
-          checkInTime: now,
+          checkInTime: nowLocal,
           isLate,
         });
 
@@ -1258,7 +1294,7 @@ export async function registerRoutes(
           studentId: student.id,
           dailyAttendanceId: attendance.id,
           eventType: isLate ? "late_check_in" : "check_in",
-          occurredAt: now,
+          occurredAt: nowLocal,
           performedByUserId: req.session.userId || null,
           kioskLocationId: kioskLocationId || null,
           meta: null,
@@ -1294,7 +1330,7 @@ export async function registerRoutes(
       if (existingAttendance.status === "pending_checkout" || existingAttendance.status === "late") {
         await storage.updateDailyAttendance(existingAttendance.id, {
           status: "present",
-          checkOutTime: now,
+          checkOutTime: nowLocal,
         });
 
         await storage.createAttendanceEvent({
@@ -1302,7 +1338,7 @@ export async function registerRoutes(
           studentId: student.id,
           dailyAttendanceId: existingAttendance.id,
           eventType: "out_final",
-          occurredAt: now,
+          occurredAt: nowLocal,
           performedByUserId: req.session.userId || null,
           kioskLocationId: kioskLocationId || null,
           meta: null,
@@ -1340,7 +1376,7 @@ export async function registerRoutes(
         studentId: student.id,
         dailyAttendanceId: existingAttendance.id,
         eventType: "scan_ignored",
-        occurredAt: now,
+        occurredAt: nowLocal,
         performedByUserId: req.session.userId || null,
         kioskLocationId: kioskLocationId || null,
         meta: null,
@@ -1384,6 +1420,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "No classes today (holiday). Manual attendance is disabled." });
       }
       const now = timestamp ? new Date(timestamp) : new Date();
+      const nowLocal = dateTimeInTimezoneAsDate(now, school.timezone);
 
       if (action === "check_in") {
         const existing = await storage.getDailyAttendance(student.id, today);
@@ -1399,7 +1436,7 @@ export async function registerRoutes(
           studentId: student.id,
           date: today,
           status,
-          checkInTime: now,
+          checkInTime: nowLocal,
           isLate,
         });
 
@@ -1408,7 +1445,7 @@ export async function registerRoutes(
           studentId: student.id,
           dailyAttendanceId: attendance.id,
           eventType: isLate ? "late_check_in" : "manual_check_in",
-          occurredAt: now,
+          occurredAt: nowLocal,
           performedByUserId: req.session.userId || null,
           meta: null,
         });
@@ -1436,7 +1473,7 @@ export async function registerRoutes(
 
         await storage.updateDailyAttendance(existing.id, {
           status: "present",
-          checkOutTime: now,
+          checkOutTime: nowLocal,
         });
 
         await storage.createAttendanceEvent({
@@ -1444,7 +1481,7 @@ export async function registerRoutes(
           studentId: student.id,
           dailyAttendanceId: existing.id,
           eventType: "manual_check_out",
-          occurredAt: now,
+          occurredAt: nowLocal,
           performedByUserId: req.session.userId || null,
           meta: null,
         });
@@ -1489,12 +1526,13 @@ export async function registerRoutes(
       }
 
       const now = new Date();
+      const nowLocal = dateTimeInTimezoneAsDate(now, school.timezone);
       let dailyAttendanceId: number;
 
       if (existingAttendance) {
         await storage.updateDailyAttendance(existingAttendance.id, {
           status,
-          markedAbsentAt: status === "absent" ? now : null,
+          markedAbsentAt: status === "absent" ? nowLocal : null,
         });
         dailyAttendanceId = existingAttendance.id;
       } else {
@@ -1506,7 +1544,7 @@ export async function registerRoutes(
           checkInTime: null,
           checkOutTime: null,
           isLate: false,
-          markedAbsentAt: status === "absent" ? now : null,
+          markedAbsentAt: status === "absent" ? nowLocal : null,
         });
         dailyAttendanceId = attendance.id;
       }
@@ -1516,7 +1554,7 @@ export async function registerRoutes(
         studentId: student.id,
         dailyAttendanceId,
         eventType: status === "absent" ? "manual_absent" : "manual_excused",
-        occurredAt: now,
+        occurredAt: nowLocal,
         performedByUserId: req.session.userId || null,
         kioskLocationId: null,
         meta: note ? { note } : null,

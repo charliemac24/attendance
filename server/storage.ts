@@ -444,13 +444,17 @@ export class DatabaseStorage implements IStorage {
     return true;
   }
 
-  async getAttendancesBySchoolAndDate(schoolId: number, date: string, status?: string): Promise<any[]> {
+  async getAttendancesBySchoolAndDate(schoolId: number, date: string, status?: string | string[]): Promise<any[]> {
     const conditions = [
       eq(dailyAttendances.schoolId, schoolId),
       eq(dailyAttendances.date, date),
     ];
     if (status) {
-      conditions.push(eq(dailyAttendances.status, status));
+      if (Array.isArray(status)) {
+        conditions.push(inArray(dailyAttendances.status, status));
+      } else {
+        conditions.push(eq(dailyAttendances.status, status));
+      }
     }
 
     return db
@@ -727,10 +731,14 @@ export class DatabaseStorage implements IStorage {
     }
 
     const checkedIn = Object.values(statusMap).reduce((a, b) => a + b, 0);
+    const presentAggregated =
+      (statusMap["present"] || 0) +
+      (statusMap["late"] || 0) +
+      (statusMap["pending_checkout"] || 0);
 
     return {
       isHoliday,
-      present: statusMap["present"] || 0,
+      present: presentAggregated,
       late: statusMap["late"] || 0,
       pendingCheckout: statusMap["pending_checkout"] || 0,
       absent: statusMap["absent"] || 0,
@@ -778,7 +786,10 @@ export class DatabaseStorage implements IStorage {
       s.total += row.count;
     }
 
-    return Array.from(sectionMap.values());
+    return Array.from(sectionMap.values()).map((s) => ({
+      ...s,
+      present: (s.present || 0) + (s.late || 0) + (s.pendingCheckout || 0),
+    }));
   }
 
   async getAttendanceIntelligence(schoolId: number, date: string): Promise<any> {
