@@ -708,7 +708,7 @@ export class DatabaseStorage implements IStorage {
 
   async getDashboardKpis(schoolId: number, date: string) {
     const isHoliday = await this.isHoliday(schoolId, date);
-
+    
     const attendances = await db
       .select({
         status: dailyAttendances.status,

@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/status-badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { localIsoDate } from "@/lib/utils";
+import { formatDatabaseTime, localIsoDate } from "@/lib/utils";
 import {
   Calendar,
   Search,
@@ -256,18 +256,12 @@ export default function TodayStatusPage() {
                         <>
                           <td className="py-3 px-4">
                             {record.checkInTime
-                              ? new Date(record.checkInTime).toLocaleTimeString([], {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })
+                              ? formatDatabaseTime(record.checkInTime)
                               : "—"}
                           </td>
                           <td className="py-3 px-4">
                             {record.checkOutTime
-                              ? new Date(record.checkOutTime).toLocaleTimeString([], {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })
+                              ? formatDatabaseTime(record.checkOutTime)
                               : "—"}
                           </td>
                           <td className="py-3 px-4">

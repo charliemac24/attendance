@@ -121,20 +121,58 @@ function formatDateTimeInTimezone(date: Date, timezone?: string): string {
   return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
 }
 
-function dateTimeInTimezoneAsDate(date: Date, timezone?: string): Date {
-  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(date);
-  const getNum = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)?.value ?? 0);
-  return new Date(Date.UTC(getNum("year"), getNum("month") - 1, getNum("day"), getNum("hour"), getNum("minute"), getNum("second")));
+function formatDatabaseDateTime(value: Date | string | null | undefined): string | null {
+  if (!value) return null;
+  if (typeof value === "string") {
+    return value.replace("T", " ").replace(/Z$/, "").slice(0, 19);
+  }
+
+  const year = value.getUTCFullYear();
+  const month = String(value.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(value.getUTCDate()).padStart(2, "0");
+  const hour = String(value.getUTCHours()).padStart(2, "0");
+  const minute = String(value.getUTCMinutes()).padStart(2, "0");
+  const second = String(value.getUTCSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+}
+
+function normalizeAttendanceRecordTimes<T extends { checkInTime?: Date | string | null; checkOutTime?: Date | string | null }>(
+  record: T,
+): T & { checkInTime: string | null; checkOutTime: string | null } {
+  return {
+    ...record,
+    checkInTime: formatDatabaseDateTime(record.checkInTime),
+    checkOutTime: formatDatabaseDateTime(record.checkOutTime),
+  };
+}
+
+function formatEventDateForTemplate(eventTime: Date | string, timezone?: string): string {
+  if (eventTime instanceof Date) {
+    return formatIsoInTimezone(eventTime, timezone);
+  }
+
+  const normalized = eventTime.replace("T", " ").replace(/Z$/, "");
+  return normalized.slice(0, 10);
+}
+
+function formatEventTimeForTemplate(eventTime: Date | string): string {
+  if (eventTime instanceof Date) {
+    return eventTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  const normalized = eventTime.replace("T", " ").replace(/Z$/, "");
+  const match = normalized.match(/(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!match) return normalized;
+
+  const hour24 = Number(match[1]);
+  const minute = match[2];
+  const period = hour24 >= 12 ? "PM" : "AM";
+  const hour12 = hour24 % 12 || 12;
+  return `${String(hour12).padStart(2, "0")}:${minute} ${period}`;
+}
+
+function mysqlDateTime(value: string) {
+  return sql`STR_TO_DATE(${value}, '%Y-%m-%d %H:%i:%s')`;
 }
 
 function hasNonEmptyString(value: unknown): value is string {
@@ -307,7 +345,7 @@ async function maybeSendAttendanceSms(args: {
     | "early_out"
     | "late"
     | "absent";
-  eventTime: Date;
+  eventTime: Date | string;
   status: string;
 }) {
   const { school, student, templateType, eventTime, status } = args;
@@ -401,8 +439,8 @@ async function maybeSendAttendanceSms(args: {
     student_name: studentName,
     grade_level: "",
     section: "",
-    date: formatIsoInTimezone(eventTime, school.timezone),
-    time: eventTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    date: formatEventDateForTemplate(eventTime, school.timezone),
+    time: formatEventTimeForTemplate(eventTime),
     status,
   });
 
@@ -455,7 +493,7 @@ async function buildTemplateBasedKioskMessage(args: {
   school: any;
   student: any;
   templateType: "check_in" | "check_out" | "late" | "absent";
-  eventTime: Date;
+  eventTime: Date | string;
   status: string;
 }): Promise<string> {
   const { school, student, templateType, eventTime, status } = args;
@@ -475,8 +513,8 @@ async function buildTemplateBasedKioskMessage(args: {
     student_name: studentName,
     grade_level: "",
     section: "",
-    date: eventTime.toISOString().slice(0, 10),
-    time: eventTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    date: formatEventDateForTemplate(eventTime, school.timezone),
+    time: formatEventTimeForTemplate(eventTime),
     status,
   });
 }
@@ -506,6 +544,22 @@ function isLateNowForSchool(now: Date, lateTime: string, timezone?: string): boo
   const lateHour = parseInt(lateTimeParts[0] ?? "0", 10);
   const lateMinute = parseInt(lateTimeParts[1] ?? "0", 10);
   const { hour, minute } = getTimePartsInTimezone(now, timezone);
+  return hour > lateHour || (hour === lateHour && minute > lateMinute);
+}
+
+function isLateStoredDateTimeForSchool(checkInTime: Date | string, lateTime: string): boolean {
+  const normalized = formatDatabaseDateTime(checkInTime);
+  if (!normalized) return false;
+
+  const timePart = normalized.slice(11, 16);
+  const [hourText = "0", minuteText = "0"] = timePart.split(":");
+  const hour = parseInt(hourText, 10);
+  const minute = parseInt(minuteText, 10);
+
+  const lateTimeParts = lateTime.split(":");
+  const lateHour = parseInt(lateTimeParts[0] ?? "0", 10);
+  const lateMinute = parseInt(lateTimeParts[1] ?? "0", 10);
+
   return hour > lateHour || (hour === lateHour && minute > lateMinute);
 }
 
@@ -835,7 +889,7 @@ export async function registerRoutes(
           (row: any) =>
             !row.isLate &&
             row.checkInTime &&
-            isLateNowForSchool(new Date(row.checkInTime), school.lateTime, school.timezone),
+            isLateStoredDateTimeForSchool(row.checkInTime, school.lateTime),
         );
         if (staleLateRows.length > 0) {
           await Promise.all(
@@ -879,7 +933,9 @@ export async function registerRoutes(
       }
 
       const total = records.length;
-      const paged = records.slice((page - 1) * pageSize, page * pageSize);
+      const paged = records
+        .slice((page - 1) * pageSize, page * pageSize)
+        .map((record: any) => normalizeAttendanceRecordTimes(record));
 
       res.json({ records: paged, total, page, pageSize });
     } catch (err: any) {
@@ -1239,30 +1295,36 @@ export async function registerRoutes(
       }
 
       const now = new Date();
-      const nowLocal = dateTimeInTimezoneAsDate(now, school.timezone);
+      const nowLocal = formatDateTimeInTimezone(now, school.timezone);
       const existingAttendance = await storage.getDailyAttendance(student.id, today);
       const minScanIntervalSeconds = clampNumber(school.minScanIntervalSeconds, 0, 600, 120);
       const remainingMs = getDuplicateScanRemainingMs(student.id, now.getTime(), minScanIntervalSeconds * 1000);
       if (remainingMs > 0) {
-        // If the student is already checked out, ignore accidental immediate re-scans
-        // without surfacing a failure message or creating duplicate records/SMS.
-        if (existingAttendance?.checkOutTime || existingAttendance?.status === "present") {
+        // Ignore accidental immediate re-scans after a successful scan without
+        // surfacing a failure message or creating duplicate records/SMS.
+        if (existingAttendance) {
           const studentName = `${student.firstName} ${student.lastName}`;
+          const isCheckedOut = Boolean(existingAttendance.checkOutTime) || existingAttendance.status === "present";
+          const isLate = existingAttendance.status === "late";
+          const templateType = isCheckedOut ? "check_out" : isLate ? "late" : "check_in";
+          const eventTime = isCheckedOut
+            ? formatDatabaseDateTime(existingAttendance.checkOutTime) ?? nowLocal
+            : formatDatabaseDateTime(existingAttendance.checkInTime) ?? nowLocal;
           const templateMessage = await buildTemplateBasedKioskMessage({
             school,
             student,
-            templateType: "check_out",
-            eventTime: existingAttendance.checkOutTime ? new Date(existingAttendance.checkOutTime) : now,
-            status: "present",
+            templateType,
+            eventTime,
+            status: existingAttendance.status,
           });
           return res.json({
             success: true,
             message: templateMessage,
             studentName,
             photoUrl: student.photoUrl || null,
-            status: "present",
-            action: "Check-out",
-            time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            status: existingAttendance.status,
+            action: isCheckedOut ? "Check-out" : isLate ? "Late Arrival" : "Check-in",
+            time: formatEventTimeForTemplate(eventTime),
           });
         }
 
@@ -1285,7 +1347,7 @@ export async function registerRoutes(
           studentId: student.id,
           date: today,
           status,
-          checkInTime: nowLocal,
+          checkInTime: mysqlDateTime(nowLocal) as any,
           isLate,
         });
 
@@ -1294,7 +1356,7 @@ export async function registerRoutes(
           studentId: student.id,
           dailyAttendanceId: attendance.id,
           eventType: isLate ? "late_check_in" : "check_in",
-          occurredAt: nowLocal,
+          occurredAt: mysqlDateTime(nowLocal) as any,
           performedByUserId: req.session.userId || null,
           kioskLocationId: kioskLocationId || null,
           meta: null,
@@ -1313,7 +1375,7 @@ export async function registerRoutes(
           school,
           student,
           templateType: isLate ? "late" : "check_in",
-          eventTime: now,
+          eventTime: nowLocal,
           status,
         });
         return res.json({
@@ -1323,14 +1385,14 @@ export async function registerRoutes(
           photoUrl: student.photoUrl || null,
           status,
           action: isLate ? "Late Arrival" : "Check-in",
-          time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          time: formatEventTimeForTemplate(nowLocal),
         });
       }
 
       if (existingAttendance.status === "pending_checkout" || existingAttendance.status === "late") {
         await storage.updateDailyAttendance(existingAttendance.id, {
           status: "present",
-          checkOutTime: nowLocal,
+          checkOutTime: mysqlDateTime(nowLocal) as any,
         });
 
         await storage.createAttendanceEvent({
@@ -1338,7 +1400,7 @@ export async function registerRoutes(
           studentId: student.id,
           dailyAttendanceId: existingAttendance.id,
           eventType: "out_final",
-          occurredAt: nowLocal,
+          occurredAt: mysqlDateTime(nowLocal) as any,
           performedByUserId: req.session.userId || null,
           kioskLocationId: kioskLocationId || null,
           meta: null,
@@ -1357,7 +1419,7 @@ export async function registerRoutes(
           school,
           student,
           templateType: "check_out",
-          eventTime: now,
+          eventTime: nowLocal,
           status: "present",
         });
         return res.json({
@@ -1367,7 +1429,7 @@ export async function registerRoutes(
           photoUrl: student.photoUrl || null,
           status: "present",
           action: "Check-out",
-          time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          time: formatEventTimeForTemplate(nowLocal),
         });
       }
 
@@ -1376,18 +1438,19 @@ export async function registerRoutes(
         studentId: student.id,
         dailyAttendanceId: existingAttendance.id,
         eventType: "scan_ignored",
-        occurredAt: nowLocal,
+        occurredAt: mysqlDateTime(nowLocal) as any,
         performedByUserId: req.session.userId || null,
         kioskLocationId: kioskLocationId || null,
         meta: null,
       });
 
       const studentName = `${student.firstName} ${student.lastName}`;
+      const checkOutTime = formatDatabaseDateTime(existingAttendance.checkOutTime) ?? nowLocal;
       const templateMessage = await buildTemplateBasedKioskMessage({
         school,
         student,
         templateType: "check_out",
-        eventTime: existingAttendance.checkOutTime ? new Date(existingAttendance.checkOutTime) : now,
+        eventTime: checkOutTime,
         status: existingAttendance.status,
       });
       return res.json({
@@ -1397,7 +1460,7 @@ export async function registerRoutes(
         photoUrl: student.photoUrl || null,
         status: existingAttendance.status,
         action: "Check-out",
-        time: now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        time: formatEventTimeForTemplate(checkOutTime),
       });
     } catch (err: any) {
       res.status(500).json({ success: false, message: err.message });
@@ -1420,7 +1483,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "No classes today (holiday). Manual attendance is disabled." });
       }
       const now = timestamp ? new Date(timestamp) : new Date();
-      const nowLocal = dateTimeInTimezoneAsDate(now, school.timezone);
+      const nowLocal = formatDateTimeInTimezone(now, school.timezone);
 
       if (action === "check_in") {
         const existing = await storage.getDailyAttendance(student.id, today);
@@ -1436,7 +1499,7 @@ export async function registerRoutes(
           studentId: student.id,
           date: today,
           status,
-          checkInTime: nowLocal,
+          checkInTime: mysqlDateTime(nowLocal) as any,
           isLate,
         });
 
@@ -1445,7 +1508,7 @@ export async function registerRoutes(
           studentId: student.id,
           dailyAttendanceId: attendance.id,
           eventType: isLate ? "late_check_in" : "manual_check_in",
-          occurredAt: nowLocal,
+          occurredAt: mysqlDateTime(nowLocal) as any,
           performedByUserId: req.session.userId || null,
           meta: null,
         });
@@ -1473,7 +1536,7 @@ export async function registerRoutes(
 
         await storage.updateDailyAttendance(existing.id, {
           status: "present",
-          checkOutTime: nowLocal,
+          checkOutTime: mysqlDateTime(nowLocal) as any,
         });
 
         await storage.createAttendanceEvent({
@@ -1481,7 +1544,7 @@ export async function registerRoutes(
           studentId: student.id,
           dailyAttendanceId: existing.id,
           eventType: "manual_check_out",
-          occurredAt: nowLocal,
+          occurredAt: mysqlDateTime(nowLocal) as any,
           performedByUserId: req.session.userId || null,
           meta: null,
         });
@@ -1526,13 +1589,13 @@ export async function registerRoutes(
       }
 
       const now = new Date();
-      const nowLocal = dateTimeInTimezoneAsDate(now, school.timezone);
+      const nowLocal = formatDateTimeInTimezone(now, school.timezone);
       let dailyAttendanceId: number;
 
       if (existingAttendance) {
         await storage.updateDailyAttendance(existingAttendance.id, {
           status,
-          markedAbsentAt: status === "absent" ? nowLocal : null,
+          markedAbsentAt: status === "absent" ? (mysqlDateTime(nowLocal) as any) : null,
         });
         dailyAttendanceId = existingAttendance.id;
       } else {
@@ -1544,7 +1607,7 @@ export async function registerRoutes(
           checkInTime: null,
           checkOutTime: null,
           isLate: false,
-          markedAbsentAt: status === "absent" ? nowLocal : null,
+          markedAbsentAt: status === "absent" ? (mysqlDateTime(nowLocal) as any) : null,
         });
         dailyAttendanceId = attendance.id;
       }
@@ -1554,7 +1617,7 @@ export async function registerRoutes(
         studentId: student.id,
         dailyAttendanceId,
         eventType: status === "absent" ? "manual_absent" : "manual_excused",
-        occurredAt: nowLocal,
+        occurredAt: mysqlDateTime(nowLocal) as any,
         performedByUserId: req.session.userId || null,
         kioskLocationId: null,
         meta: note ? { note } : null,

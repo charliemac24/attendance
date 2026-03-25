@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/status-badge";
-import { localIsoDate } from "@/lib/utils";
+import { formatDatabaseTime, localIsoDate } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -336,14 +336,10 @@ function AttendanceTable({
               </td>
               <td className="py-3 px-4 text-muted-foreground">{r.date}</td>
               <td className="py-3 px-4">
-                {r.checkInTime
-                  ? new Date(r.checkInTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                  : "-"}
+                {r.checkInTime ? formatDatabaseTime(r.checkInTime) : "-"}
               </td>
           <td className="py-3 px-4">
-            {r.checkOutTime
-              ? new Date(r.checkOutTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-              : "-"}
+            {r.checkOutTime ? formatDatabaseTime(r.checkOutTime) : "-"}
           </td>
           <td className="py-3 px-4">
             <StatusBadge
