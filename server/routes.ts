@@ -1893,7 +1893,7 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json([]);
-      const { startDate, endDate, grade, section } = req.query;
+      const { startDate, endDate, grade, section, studentName, studentNo } = req.query;
       const records = await storage.getAttendanceReport(
         schoolId,
         startDate as string || new Date().toISOString().split("T")[0],
@@ -1901,7 +1901,15 @@ export async function registerRoutes(
         grade && grade !== "all" ? Number(grade) : undefined,
         section && section !== "all" ? Number(section) : undefined,
       );
-      res.json(normalizeDailyReportStatuses(records));
+      const normalized = normalizeDailyReportStatuses(records);
+      const nameFilter = String(studentName || "").trim().toLowerCase();
+      const studentNoFilter = String(studentNo || "").trim().toLowerCase();
+      const filtered = normalized.filter((r: any) => {
+        if (nameFilter && !String(r.studentName || "").toLowerCase().includes(nameFilter)) return false;
+        if (studentNoFilter && !String(r.studentNo || "").toLowerCase().includes(studentNoFilter)) return false;
+        return true;
+      });
+      res.json(filtered);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -2115,6 +2123,13 @@ export async function registerRoutes(
         );
         if (type === "daily") {
           data = normalizeDailyReportStatuses(data);
+          const nameFilter = String(req.query.studentName || "").trim().toLowerCase();
+          const studentNoFilter = String(req.query.studentNo || "").trim().toLowerCase();
+          data = data.filter((r: any) => {
+            if (nameFilter && !String(r.studentName || "").toLowerCase().includes(nameFilter)) return false;
+            if (studentNoFilter && !String(r.studentNo || "").toLowerCase().includes(studentNoFilter)) return false;
+            return true;
+          });
         } else if (type === "absentees") {
           const nameFilter = String(req.query.studentName || "").trim().toLowerCase();
           const studentNoFilter = String(req.query.studentNo || "").trim().toLowerCase();

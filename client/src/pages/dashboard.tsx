@@ -75,6 +75,53 @@ export default function DashboardPage() {
     low_attendance_score: "Low score",
   };
 
+  const getPrimaryAttentionReason = (student: AttendanceIntelligenceData["atRiskStudents"][number]) => {
+    if (student.riskFlags.includes("chronic_absent")) return "Chronic absences";
+    if (student.riskFlags.includes("low_attendance_score")) return "Low attendance score";
+    if (student.riskFlags.includes("missing_checkout_pattern")) return "Missing check-out pattern";
+    if (student.riskFlags.includes("frequent_late")) return "Frequent late arrivals";
+    if (student.trend === "declining") return "Declining recently";
+    return "Needs review";
+  };
+
+  const getAttentionExplanation = (student: AttendanceIntelligenceData["atRiskStudents"][number]) => {
+    if (student.riskFlags.includes("chronic_absent")) {
+      return "Attendance history shows repeated absences in the selected window.";
+    }
+    if (student.riskFlags.includes("low_attendance_score")) {
+      return "Overall attendance score dropped below the healthy range.";
+    }
+    if (student.riskFlags.includes("missing_checkout_pattern")) {
+      return "This student has several missing check-out records.";
+    }
+    if (student.riskFlags.includes("frequent_late")) {
+      return "This student has multiple late arrivals in the selected window.";
+    }
+    if (student.trend === "declining") {
+      return "Recent attendance performance is weaker than the earlier part of the selected window.";
+    }
+    return "This student has attendance patterns worth reviewing.";
+  };
+
+  const getAttentionBadge = (student: AttendanceIntelligenceData["atRiskStudents"][number]) => {
+    if (student.riskFlags.includes("chronic_absent") || student.riskFlags.includes("low_attendance_score")) {
+      return { label: "High risk", className: "bg-red-100 text-red-700 border-red-200" };
+    }
+    if (student.riskFlags.length > 0) {
+      return { label: "Needs review", className: "bg-amber-100 text-amber-800 border-amber-200" };
+    }
+    if (student.trend === "declining") {
+      return { label: "Trend watch", className: "bg-orange-100 text-orange-800 border-orange-200" };
+    }
+    return { label: "Watchlist", className: "bg-slate-100 text-slate-700 border-slate-200" };
+  };
+
+  const getTrendBadgeClass = (trend: AttendanceIntelligenceData["atRiskStudents"][number]["trend"]) => {
+    if (trend === "declining") return "bg-orange-100 text-orange-800 border-orange-200";
+    if (trend === "improving") return "bg-green-100 text-green-700 border-green-200";
+    return "bg-slate-100 text-slate-700 border-slate-200";
+  };
+
   const kpiCards = [
     {
       label: "Present",
@@ -171,7 +218,12 @@ export default function DashboardPage() {
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
-          <h3 className="text-sm font-semibold">At-Risk Students</h3>
+          <div>
+            <h3 className="text-sm font-semibold">Students Needing Attention</h3>
+            <p className="text-xs text-muted-foreground mt-1">
+              Students appear here for attendance risk flags or a declining recent trend.
+            </p>
+          </div>
           <Badge variant="secondary" className="no-default-hover-elevate no-default-active-elevate">
             {intelligence?.summary.atRiskCount ?? 0}
           </Badge>
@@ -180,46 +232,61 @@ export default function DashboardPage() {
           {isIntelligenceLoading ? (
             <Skeleton className="h-40 w-full" />
           ) : intelligence?.atRiskStudents && intelligence.atRiskStudents.length > 0 ? (
-            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
-              {intelligence.atRiskStudents.slice(0, 9).map((s) => (
-                <div key={s.studentId} className="border rounded-md p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">{s.studentName}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {s.studentNo} • {s.gradeLevel} / {s.section}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-sm font-semibold">Score {s.score}</p>
-                      <Badge
-                        variant={
-                          s.trend === "declining"
-                            ? "destructive"
-                            : s.trend === "improving"
-                              ? "default"
-                              : "secondary"
-                        }
-                        className="text-[10px] mt-1 no-default-hover-elevate no-default-active-elevate"
-                      >
-                        {s.trend}
-                      </Badge>
-                    </div>
-                  </div>
-                  {s.riskFlags.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      {s.riskFlags.slice(0, 3).map((flag) => (
-                        <Badge key={flag} variant="outline" className="text-[10px]">
-                          {riskFlagLabel[flag] || flag}
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-muted-foreground">
+                    <th className="text-left py-2 pr-3 font-medium">Student</th>
+                    <th className="text-left py-2 pr-3 font-medium">Class</th>
+                    <th className="text-left py-2 pr-3 font-medium">Attention</th>
+                    <th className="text-left py-2 pr-3 font-medium">Reason</th>
+                    <th className="text-left py-2 pr-3 font-medium">Score</th>
+                    <th className="text-left py-2 font-medium">Trend</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {intelligence.atRiskStudents.slice(0, 9).map((s) => {
+                    const attentionBadge = getAttentionBadge(s);
+                    return (
+                      <tr key={s.studentId} className="border-b last:border-0 align-top">
+                        <td className="py-3 pr-3">
+                          <p className="font-semibold text-foreground">{s.studentName}</p>
+                          <p className="text-xs text-muted-foreground">{s.studentNo}</p>
+                        </td>
+                        <td className="py-3 pr-3 text-muted-foreground">
+                          {s.gradeLevel} / {s.section}
+                        </td>
+                        <td className="py-3 pr-3">
+                          <Badge className={`border text-[10px] font-semibold ${attentionBadge.className}`}>
+                            {attentionBadge.label}
+                          </Badge>
+                        </td>
+                        <td className="py-3 pr-3">
+                          <p className="font-medium text-foreground">{getPrimaryAttentionReason(s)}</p>
+                          <p className="text-xs text-muted-foreground mt-1 max-w-xs">
+                            {s.riskFlags.length > 0
+                              ? s.riskFlags.slice(0, 3).map((flag) => riskFlagLabel[flag] || flag).join(", ")
+                              : getAttentionExplanation(s)}
+                          </p>
+                        </td>
+                        <td className="py-3 pr-3">
+                          <span className="inline-flex rounded-md border bg-muted/30 px-2.5 py-1.5 font-semibold">
+                            {s.score}
+                          </span>
+                        </td>
+                        <td className="py-3">
+                          <Badge className={`border text-[10px] capitalize ${getTrendBadgeClass(s.trend)}`}>
+                            {s.trend}
+                          </Badge>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           ) : (
-            <p className="text-muted-foreground text-sm py-4 text-center">No at-risk students in selected window</p>
+            <p className="text-muted-foreground text-sm py-4 text-center">No students needing attention in the selected window</p>
           )}
         </CardContent>
       </Card>

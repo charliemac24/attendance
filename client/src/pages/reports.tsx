@@ -196,7 +196,7 @@ export default function ReportsPage() {
                     ))}
                   </SelectContent>
                 </Select>
-                {(reportType === "late-history" || reportType === "absentees") && (
+                {(reportType === "daily" || reportType === "late-history" || reportType === "absentees") && (
                   <>
                     <Input
                       placeholder="Student Name"
