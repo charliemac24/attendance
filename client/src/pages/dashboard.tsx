@@ -17,9 +17,9 @@ import { localIsoDate } from "@/lib/utils";
 interface DashboardData {
   date: string;
   kpis: {
-    present: number;
-    late: number;
-    pendingCheckout: number;
+    checkedOut: number;
+    lateArrivals: number;
+    onCampus: number;
     absent: number;
     notCheckedIn: number;
     total: number;
@@ -33,10 +33,10 @@ interface DashboardData {
   sectionBreakdown: Array<{
     section: string;
     gradeLevel: string;
-    present: number;
-    late: number;
+    checkedOut: number;
+    lateArrivals: number;
     absent: number;
-    pendingCheckout: number;
+    onCampus: number;
     total: number;
   }>;
 }
@@ -63,9 +63,13 @@ export default function DashboardPage() {
 
   const { data, isLoading } = useQuery<DashboardData>({
     queryKey: [`/api/dashboard?date=${selectedDate}`],
+    refetchInterval: 15000,
+    refetchOnWindowFocus: true,
   });
   const { data: intelligence, isLoading: isIntelligenceLoading } = useQuery<AttendanceIntelligenceData>({
     queryKey: [`/api/attendance-intelligence?date=${selectedDate}`],
+    refetchInterval: 15000,
+    refetchOnWindowFocus: true,
   });
 
   const riskFlagLabel: Record<string, string> = {
@@ -124,20 +128,28 @@ export default function DashboardPage() {
 
   const kpiCards = [
     {
-      label: "Present",
-      value: data?.kpis.present ?? 0,
+      label: "Checked Out",
+      value: data?.kpis.checkedOut ?? 0,
       icon: UserCheck,
       color: "text-green-600 dark:text-green-400",
       bgColor: "bg-green-50 dark:bg-green-950/30",
       href: `/today/present?date=${selectedDate}`,
     },
     {
-      label: "Late",
-      value: data?.kpis.late ?? 0,
+      label: "Late Arrivals",
+      value: data?.kpis.lateArrivals ?? 0,
       icon: Clock,
       color: "text-amber-600 dark:text-amber-400",
       bgColor: "bg-amber-50 dark:bg-amber-950/30",
       href: `/today/late?date=${selectedDate}`,
+    },
+    {
+      label: "On Campus",
+      value: data?.kpis.onCampus ?? 0,
+      icon: ArrowRight,
+      color: "text-blue-600 dark:text-blue-400",
+      bgColor: "bg-blue-50 dark:bg-blue-950/30",
+      href: `/today/pending-checkout?date=${selectedDate}`,
     },
   ];
 
@@ -179,9 +191,9 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {isLoading
-          ? Array.from({ length: 2 }).map((_, i) => (
+          ? Array.from({ length: 3 }).map((_, i) => (
               <Card key={i}>
                 <CardContent className="p-4">
                   <Skeleton className="h-12 w-full" />
@@ -305,10 +317,10 @@ export default function DashboardPage() {
                   <thead>
                     <tr className="border-b text-muted-foreground">
                       <th className="text-left py-2 pr-2 font-medium">Section</th>
-                      <th className="text-center py-2 px-1 font-medium">P</th>
-                      <th className="text-center py-2 px-1 font-medium">L</th>
+                      <th className="text-center py-2 px-1 font-medium">CO</th>
+                      <th className="text-center py-2 px-1 font-medium">LA</th>
                       <th className="text-center py-2 px-1 font-medium">A</th>
-                      <th className="text-center py-2 px-1 font-medium">PC</th>
+                      <th className="text-center py-2 px-1 font-medium">OC</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -318,10 +330,10 @@ export default function DashboardPage() {
                           <span className="font-medium">{row.section}</span>
                           <span className="text-muted-foreground text-xs ml-1">({row.gradeLevel})</span>
                         </td>
-                        <td className="text-center py-2 px-1 text-green-600 dark:text-green-400">{row.present}</td>
-                        <td className="text-center py-2 px-1 text-amber-600 dark:text-amber-400">{row.late}</td>
+                        <td className="text-center py-2 px-1 text-green-600 dark:text-green-400">{row.checkedOut}</td>
+                        <td className="text-center py-2 px-1 text-amber-600 dark:text-amber-400">{row.lateArrivals}</td>
                         <td className="text-center py-2 px-1 text-red-600 dark:text-red-400">{row.absent}</td>
-                        <td className="text-center py-2 px-1 text-blue-600 dark:text-blue-400">{row.pendingCheckout}</td>
+                        <td className="text-center py-2 px-1 text-blue-600 dark:text-blue-400">{row.onCampus}</td>
                       </tr>
                     ))}
                   </tbody>

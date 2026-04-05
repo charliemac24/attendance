@@ -8,11 +8,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { Plus, Edit, Trash2, Users, Shield } from "lucide-react";
-import type { School } from "@shared/schema";
+import type { School, Section } from "@shared/schema";
 
 interface UserData {
   id: number;
@@ -21,6 +22,7 @@ interface UserData {
   fullName: string;
   role: string;
   schoolId: number | null;
+  teacherSectionIds?: number[];
 }
 
 const roleLabels: Record<string, string> = {
@@ -51,6 +53,7 @@ export default function UsersPage() {
     email: "",
     role: "teacher",
     schoolId: "",
+    teacherSectionIds: [] as string[],
   });
 
   const { data: usersList, isLoading } = useQuery<UserData[]>({
@@ -62,6 +65,11 @@ export default function UsersPage() {
   const { data: schools } = useQuery<School[]>({
     queryKey: ["/api/schools"],
     enabled: isSuperAdmin,
+  });
+
+  const { data: sections } = useQuery<Section[]>({
+    queryKey: ["/api/sections"],
+    enabled: Boolean(currentUser),
   });
 
   const availableRoles = isSuperAdmin
@@ -85,6 +93,10 @@ export default function UsersPage() {
 
       if (isSuperAdmin && formData.schoolId) {
         payload.schoolId = Number(formData.schoolId);
+      }
+
+      if (formData.role === "teacher") {
+        payload.teacherSectionIds = formData.teacherSectionIds.map((value) => Number(value));
       }
 
       if (editing) {
@@ -133,6 +145,7 @@ export default function UsersPage() {
       email: "",
       role: "teacher",
       schoolId: isSuperAdmin ? String(currentUser?.selectedSchoolId || "") : "",
+      teacherSectionIds: [],
     });
     setDialogOpen(true);
   };
@@ -146,8 +159,18 @@ export default function UsersPage() {
       email: u.email || "",
       role: u.role,
       schoolId: u.schoolId ? String(u.schoolId) : "",
+      teacherSectionIds: (u.teacherSectionIds || []).map((value) => String(value)),
     });
     setDialogOpen(true);
+  };
+
+  const toggleTeacherSection = (sectionId: string, checked: boolean | "indeterminate") => {
+    setFormData((current) => ({
+      ...current,
+      teacherSectionIds: checked
+        ? Array.from(new Set([...current.teacherSectionIds, sectionId]))
+        : current.teacherSectionIds.filter((value) => value !== sectionId),
+    }));
   };
 
   return (
@@ -295,6 +318,33 @@ export default function UsersPage() {
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+            )}
+            {formData.role === "teacher" && (
+              <div className="space-y-2">
+                <Label>Assigned Grade Level and Section</Label>
+                <div className="max-h-48 space-y-2 overflow-y-auto rounded-md border p-3">
+                  {sections && sections.length > 0 ? (
+                    sections.map((section) => (
+                      <label key={section.id} className="flex items-center gap-3 text-sm">
+                        <Checkbox
+                          checked={formData.teacherSectionIds.includes(String(section.id))}
+                          onCheckedChange={(checked) => toggleTeacherSection(String(section.id), checked)}
+                        />
+                        <span>
+                          {("gradeLevelName" in section && section.gradeLevelName)
+                            ? `${section.gradeLevelName} - ${section.name}`
+                            : section.name}
+                        </span>
+                      </label>
+                    ))
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No sections available for assignment.</p>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Teachers will only see students and attendance data from the grade-level sections assigned here.
+                </p>
               </div>
             )}
             <div className="flex justify-end gap-2">

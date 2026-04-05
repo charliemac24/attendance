@@ -3,12 +3,16 @@ FROM node:20-slim
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+RUN node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8')); if(p.dependencies && p.dependencies['@esbuild/linux-x64']) delete p.dependencies['@esbuild/linux-x64']; fs.writeFileSync('package.json', JSON.stringify(p, null, 2));" \
+  && npm install --omit=dev --package-lock=false
 
-COPY . .
-RUN npm run build
+COPY dist ./dist
+COPY public ./public
+COPY uploads ./uploads
+COPY tmp ./tmp
+COPY .htaccess ./
 
 ENV NODE_ENV=production
 EXPOSE 5000
 
-CMD ["sh", "-c", "npm run db:migrate && npm run start"]
+CMD ["node", "dist/index.cjs"]

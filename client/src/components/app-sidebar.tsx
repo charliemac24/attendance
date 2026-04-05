@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   Users,
   GraduationCap,
+  ArrowUpCircle,
   Layers,
   ScanLine,
   ClipboardList,
@@ -58,15 +59,16 @@ export function AppSidebar() {
   ];
 
   const todayItems = [
-    { title: "Present", url: "/today/present", icon: UserCheck },
-    { title: "Late", url: "/today/late", icon: Clock },
-    { title: "Pending Checkout", url: "/today/pending-checkout", icon: AlertTriangle },
+    { title: "Checked Out", url: "/today/present", icon: UserCheck },
+    { title: "Late Arrivals", url: "/today/late", icon: Clock },
+    { title: "On Campus", url: "/today/pending-checkout", icon: AlertTriangle },
     { title: "Absent", url: "/today/absent", icon: UserX },
     { title: "Not Checked In", url: "/today/not-checked-in-yet", icon: HelpCircle },
   ];
 
   const managementItems = [
     { title: "Students", url: "/students", icon: Users },
+    { title: "Promotion", url: "/students/promotion", icon: ArrowUpCircle },
     { title: "Import Students", url: "/students/import", icon: Upload },
     { title: "Grade Levels", url: "/grade-levels", icon: GraduationCap },
     { title: "Sections", url: "/sections", icon: Layers },
@@ -82,7 +84,7 @@ export function AppSidebar() {
     { title: "Daily Report", url: "/reports/daily", icon: ClipboardList },
     { title: "Late History", url: "/reports/late-history", icon: Clock },
     { title: "Absentees", url: "/reports/absentees", icon: FileText },
-    { title: "SMS Usage", url: "/reports/sms-usage", icon: MessageSquare },
+    ...(user?.role === "teacher" ? [] : [{ title: "SMS Usage", url: "/reports/sms-usage", icon: MessageSquare }]),
     ...(user?.role === "super_admin" ? [{ title: "SMS Billing", url: "/reports/sms-billing", icon: MessageSquare }] : []),
   ];
 
@@ -150,7 +152,7 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {hasRole(user, "super_admin", "school_admin", "gate_staff") && (
+        {hasRole(user, "super_admin", "school_admin", "gate_staff", "teacher") && (
           <SidebarGroup>
             <SidebarGroupLabel>Today's Status</SidebarGroupLabel>
             <SidebarGroupContent>
@@ -169,6 +171,24 @@ export function AppSidebar() {
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
+
+        {hasRole(user, "teacher") && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Class View</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild data-active={isActive("/students")}>
+                    <Link href="/students" onClick={handleNavClick} data-testid="link-teacher-students">
+                      <Users className="h-4 w-4" />
+                      <span>Students</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>

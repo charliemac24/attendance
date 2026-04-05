@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { localIsoDate } from "@/lib/utils";
-import { Plus, Search, Edit, Users, Trash2, Printer, X, UserX, CheckCircle2 } from "lucide-react";
+import { useAuth } from "@/lib/auth";
+import { Plus, Search, Edit, Users, Trash2, Printer, X, UserX, CheckCircle2, ArrowUpCircle, Layers } from "lucide-react";
 import QRCode from "qrcode";
 import type { Student, GradeLevel, Section } from "@shared/schema";
 
@@ -141,7 +143,11 @@ function renderPrintWindow(
 }
 
 export default function StudentsPage() {
+  const { user } = useAuth();
+  const canManageStudents = user?.role === "super_admin" || user?.role === "school_admin";
   const [search, setSearch] = useState("");
+  const [gradeFilter, setGradeFilter] = useState("all");
+  const [sectionFilter, setSectionFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [studentToDelete, setStudentToDelete] = useState<StudentWithRelations | null>(null);
@@ -159,6 +165,16 @@ export default function StudentsPage() {
 
   const { data: sections } = useQuery<Section[]>({
     queryKey: ["/api/sections"],
+  });
+
+  const filteredSections = (sections || []).filter((section) =>
+    gradeFilter === "all" ? true : String(section.gradeLevelId) === gradeFilter,
+  );
+
+  const visibleStudents = (students || []).filter((student) => {
+    if (gradeFilter !== "all" && String(student.gradeLevelId || "") !== gradeFilter) return false;
+    if (sectionFilter !== "all" && String(student.sectionId || "") !== sectionFilter) return false;
+    return true;
   });
 
 const [formData, setFormData] = useState({
@@ -189,16 +205,17 @@ const [formData, setFormData] = useState({
   });
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
-  const allIds = students?.map((s) => s.id) ?? [];
+  const [bulkAssignDialogOpen, setBulkAssignDialogOpen] = useState(false);
+  const [bulkAssignSectionId, setBulkAssignSectionId] = useState("none");
+  const allIds = visibleStudents.map((s) => s.id);
   const allSelected = allIds.length > 0 && selectedIds.length === allIds.length;
   const someSelected = selectedIds.length > 0 && !allSelected;
 
   useEffect(() => {
-    // Drop any selections that are no longer in the current list
-    if (!students) return;
-    const valid = new Set(students.map((s) => s.id));
+    // Drop any selections that are no longer in the current filtered list
+    const valid = new Set(visibleStudents.map((s) => s.id));
     setSelectedIds((prev) => prev.filter((id) => valid.has(id)));
-  }, [students]);
+  }, [visibleStudents]);
 
   useEffect(() => {
     if (!photoFile) {
@@ -286,6 +303,31 @@ const [formData, setFormData] = useState({
       });
       setSelectedIds([]);
       toast({ title: "Students deleted" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const bulkAssignMutation = useMutation({
+    mutationFn: async ({ ids, sectionId }: { ids: number[]; sectionId: string }) => {
+      await apiRequest("POST", "/api/students/bulk-assign-section", {
+        studentIds: ids,
+        sectionId: sectionId === "none" ? null : Number(sectionId),
+      });
+    },
+    onSuccess: async (_data, variables) => {
+      await queryClient.invalidateQueries({
+        predicate: (query) => (query.queryKey[0] as string)?.startsWith("/api/students"),
+      });
+      setBulkAssignDialogOpen(false);
+      const selectedSection = (sections || []).find((section) => String(section.id) === variables.sectionId);
+      toast({
+        title: selectedSection ? "Students assigned to section" : "Section assignment cleared",
+        description: selectedSection
+          ? `${variables.ids.length} student${variables.ids.length === 1 ? "" : "s"} assigned to ${selectedSection.name}.`
+          : `${variables.ids.length} student${variables.ids.length === 1 ? "" : "s"} cleared from section.`,
+      });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -425,11 +467,17 @@ const openEdit = (student: StudentWithRelations) => {
           <div>
             <h1 className="text-xl font-bold" data-testid="text-students-title">Students</h1>
             <p className="text-sm text-muted-foreground">
-              {students?.length ?? 0} total students
+              {visibleStudents.length} of {students?.length ?? 0} students shown
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button asChild variant="outline" data-testid="button-open-promotion-page">
+            <Link href="/students/promotion">
+              <ArrowUpCircle className="h-4 w-4 mr-1" />
+              Bulk Promotion
+            </Link>
+          </Button>
           <Button
             variant="outline"
             onClick={() =>
@@ -449,7 +497,18 @@ const openEdit = (student: StudentWithRelations) => {
             <Printer className="h-4 w-4 mr-1" />
             {isPrinting ? "Preparing..." : "Print Filtered QR"}
           </Button>
-          {selectedIds.length > 0 && (
+          {canManageStudents && selectedIds.length > 0 && (
+            <Button
+              variant="outline"
+              onClick={() => setBulkAssignDialogOpen(true)}
+              disabled={bulkAssignMutation.isPending}
+              data-testid="button-assign-selected-section"
+            >
+              <Layers className="h-4 w-4 mr-1" />
+              {bulkAssignMutation.isPending ? "Assigning..." : `Assign Section (${selectedIds.length})`}
+            </Button>
+          )}
+          {canManageStudents && selectedIds.length > 0 && (
             <Button
               variant="destructive"
               onClick={() => setBulkDeleteDialogOpen(true)}
@@ -459,24 +518,60 @@ const openEdit = (student: StudentWithRelations) => {
               {bulkDeleteMutation.isPending ? "Deleting..." : `Delete Selected (${selectedIds.length})`}
             </Button>
           )}
-          <Button onClick={openCreate} data-testid="button-add-student">
-            <Plus className="h-4 w-4 mr-1" />
-            Add Student
-          </Button>
+          {canManageStudents && (
+            <Button onClick={openCreate} data-testid="button-add-student">
+              <Plus className="h-4 w-4 mr-1" />
+              Add Student
+            </Button>
+          )}
         </div>
       </div>
 
       <Card>
         <CardContent className="p-4">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search by name or student ID..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-9"
-              data-testid="input-search-students"
-            />
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by name or student ID..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="pl-9"
+                data-testid="input-search-students"
+              />
+            </div>
+            <Select
+              value={gradeFilter}
+              onValueChange={(value) => {
+                setGradeFilter(value);
+                setSectionFilter("all");
+              }}
+            >
+              <SelectTrigger data-testid="select-filter-grade">
+                <SelectValue placeholder="All grade levels" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All grade levels</SelectItem>
+                {gradeLevels?.map((gradeLevel) => (
+                  <SelectItem key={gradeLevel.id} value={String(gradeLevel.id)}>
+                    {gradeLevel.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={sectionFilter} onValueChange={setSectionFilter}>
+              <SelectTrigger data-testid="select-filter-section">
+                <SelectValue placeholder="All sections" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All sections</SelectItem>
+                {filteredSections.map((section) => (
+                  <SelectItem key={section.id} value={String(section.id)}>
+                    {section.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </CardContent>
       </Card>
@@ -489,18 +584,20 @@ const openEdit = (student: StudentWithRelations) => {
                 <Skeleton key={i} className="h-12 w-full" />
               ))}
             </div>
-          ) : students && students.length > 0 ? (
+          ) : visibleStudents.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/30">
-                    <th className="w-10 text-left py-3 px-4">
-                      <Checkbox
-                        checked={allSelected ? true : someSelected ? "indeterminate" : false}
-                        onCheckedChange={toggleSelectAll}
-                        aria-label="Select all"
-                      />
-                    </th>
+                    {canManageStudents && (
+                      <th className="w-10 text-left py-3 px-4">
+                        <Checkbox
+                          checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                          onCheckedChange={toggleSelectAll}
+                          aria-label="Select all"
+                        />
+                      </th>
+                    )}
                     <th className="text-left py-3 px-4 font-medium">Student</th>
                     <th className="text-left py-3 px-4 font-medium">ID</th>
                     <th className="text-left py-3 px-4 font-medium">Grade / Section</th>
@@ -510,15 +607,17 @@ const openEdit = (student: StudentWithRelations) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {students.map((student) => (
+                  {visibleStudents.map((student) => (
                     <tr key={student.id} className="border-b last:border-0" data-testid={`row-student-${student.id}`}>
-                      <td className="py-3 px-4">
-                        <Checkbox
-                          checked={selectedIds.includes(student.id)}
-                          onCheckedChange={(checked) => toggleSelect(student.id, checked)}
-                          aria-label={`Select ${student.firstName} ${student.lastName}`}
-                        />
-                      </td>
+                      {canManageStudents && (
+                        <td className="py-3 px-4">
+                          <Checkbox
+                            checked={selectedIds.includes(student.id)}
+                            onCheckedChange={(checked) => toggleSelect(student.id, checked)}
+                            aria-label={`Select ${student.firstName} ${student.lastName}`}
+                          />
+                        </td>
+                      )}
                       <td className="py-3 px-4 font-medium">
                         <div className="flex items-center gap-3">
                           <Avatar className="h-9 w-9">
@@ -544,62 +643,66 @@ const openEdit = (student: StudentWithRelations) => {
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() =>
-                              printStudents(
-                                [
-                                  {
-                                    firstName: student.firstName,
-                                    lastName: student.lastName,
-                                    studentNo: student.studentNo,
-                                    qrToken: student.qrToken,
-                                  },
-                                ],
-                                `Student QR Code - ${student.firstName} ${student.lastName}`,
-                              )
-                            }
-                            disabled={isPrinting}
-                            data-testid={`button-print-student-qr-${student.id}`}
-                            title="Print student QR"
-                          >
-                            <Printer className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => openEdit(student)}
-                            data-testid={`button-edit-student-${student.id}`}
-                          >
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => confirmDelete(student)}
-                            data-testid={`button-delete-student-${student.id}`}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => openStatusDialog(student, "absent")}
-                            title="Mark absent"
-                            data-testid={`button-absent-student-${student.id}`}
-                          >
-                            <UserX className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => openStatusDialog(student, "excused")}
-                            title="Mark excused"
-                            data-testid={`button-excused-student-${student.id}`}
-                          >
-                            <CheckCircle2 className="h-4 w-4" />
-                          </Button>
+                          {canManageStudents && (
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() =>
+                                  printStudents(
+                                    [
+                                      {
+                                        firstName: student.firstName,
+                                        lastName: student.lastName,
+                                        studentNo: student.studentNo,
+                                        qrToken: student.qrToken,
+                                      },
+                                    ],
+                                    `Student QR Code - ${student.firstName} ${student.lastName}`,
+                                  )
+                                }
+                                disabled={isPrinting}
+                                data-testid={`button-print-student-qr-${student.id}`}
+                                title="Print student QR"
+                              >
+                                <Printer className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => openEdit(student)}
+                                data-testid={`button-edit-student-${student.id}`}
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => confirmDelete(student)}
+                                data-testid={`button-delete-student-${student.id}`}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => openStatusDialog(student, "absent")}
+                                title="Mark absent"
+                                data-testid={`button-absent-student-${student.id}`}
+                              >
+                                <UserX className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => openStatusDialog(student, "excused")}
+                                title="Mark excused"
+                                data-testid={`button-excused-student-${student.id}`}
+                              >
+                                <CheckCircle2 className="h-4 w-4" />
+                              </Button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -610,13 +713,13 @@ const openEdit = (student: StudentWithRelations) => {
           ) : (
             <div className="p-12 text-center">
               <Users className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
-              <p className="text-muted-foreground">No students found</p>
+              <p className="text-muted-foreground">No students found for the current filters</p>
             </div>
           )}
         </CardContent>
       </Card>
 
-      <Dialog open={statusDialogOpen} onOpenChange={setStatusDialogOpen}>
+      <Dialog open={canManageStudents && statusDialogOpen} onOpenChange={setStatusDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Mark {statusForm.status === "absent" ? "Absent" : "Excused"}</DialogTitle>
@@ -656,7 +759,7 @@ const openEdit = (student: StudentWithRelations) => {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog open={canManageStudents && dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
@@ -825,7 +928,7 @@ const openEdit = (student: StudentWithRelations) => {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+      <Dialog open={canManageStudents && deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Delete Student</DialogTitle>
@@ -850,7 +953,7 @@ const openEdit = (student: StudentWithRelations) => {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={bulkDeleteDialogOpen} onOpenChange={setBulkDeleteDialogOpen}>
+      <Dialog open={canManageStudents && bulkDeleteDialogOpen} onOpenChange={setBulkDeleteDialogOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Delete Selected Students</DialogTitle>
@@ -870,6 +973,59 @@ const openEdit = (student: StudentWithRelations) => {
             >
               {bulkDeleteMutation.isPending ? "Deleting..." : "Delete"}
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={canManageStudents && bulkAssignDialogOpen}
+        onOpenChange={(open) => {
+          setBulkAssignDialogOpen(open);
+          if (!open) setBulkAssignSectionId("none");
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Bulk Assign Section</DialogTitle>
+            <DialogDescription>
+              Assign {selectedIds.length} selected student{selectedIds.length === 1 ? "" : "s"} to one section. The grade level will also update to match that section.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Select section</Label>
+              <Select value={bulkAssignSectionId} onValueChange={setBulkAssignSectionId}>
+                <SelectTrigger data-testid="select-bulk-assign-section">
+                  <SelectValue placeholder="Choose a section" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Clear section assignment</SelectItem>
+                  {sections?.map((section) => {
+                    const sectionGrade = gradeLevels?.find((gradeLevel) => gradeLevel.id === section.gradeLevelId);
+                    return (
+                      <SelectItem key={section.id} value={String(section.id)}>
+                        {section.name}{sectionGrade ? ` (${sectionGrade.name})` : ""}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Choosing a section automatically syncs the student grade level to that section&apos;s grade.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setBulkAssignDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => bulkAssignMutation.mutate({ ids: selectedIds, sectionId: bulkAssignSectionId })}
+                disabled={bulkAssignMutation.isPending || selectedIds.length === 0}
+                data-testid="button-confirm-bulk-assign-section"
+              >
+                {bulkAssignMutation.isPending ? "Saving..." : "Apply Assignment"}
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>

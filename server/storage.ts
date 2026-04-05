@@ -49,6 +49,8 @@ export interface IStorage {
   createUser(data: InsertUser): Promise<User>;
   updateUser(id: number, data: Partial<InsertUser>): Promise<User | undefined>;
   deleteUser(id: number): Promise<void>;
+  getTeacherSectionIds(userId: number): Promise<number[]>;
+  replaceTeacherSections(userId: number, sectionIds: number[]): Promise<void>;
 
   // Students
   getStudents(schoolId: number, search?: string): Promise<any[]>;
@@ -59,6 +61,30 @@ export interface IStorage {
   updateStudent(id: number, data: Partial<InsertStudent>): Promise<Student | undefined>;
   deleteStudent(id: number): Promise<void>;
   upsertStudentBySchoolAndNo(schoolId: number, studentNo: string, data: Partial<InsertStudent>): Promise<Student & { wasUpdate: boolean }>;
+  bulkPromoteStudents(
+    schoolId: number,
+    items: Array<{
+      studentId: number;
+      action: "promote" | "retain" | "graduate" | "transfer_out";
+      targetGradeLevelId?: number | null;
+      targetSectionId?: number | null;
+    }>
+  ): Promise<{
+    total: number;
+    promoted: number;
+    retained: number;
+    graduated: number;
+    transferredOut: number;
+  }>;
+  bulkAssignStudentsToSection(
+    schoolId: number,
+    studentIds: number[],
+    sectionId: number | null
+  ): Promise<{
+    total: number;
+    assigned: number;
+    cleared: number;
+  }>;
 
   // Grade Levels
   getGradeLevels(schoolId: number): Promise<GradeLevel[]>;
@@ -226,7 +252,29 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteUser(id: number): Promise<void> {
+    await db.delete(teacherSections).where(eq(teacherSections.userId, id));
     await db.delete(users).where(eq(users.id, id));
+  }
+
+  async getTeacherSectionIds(userId: number): Promise<number[]> {
+    const rows = await db
+      .select({ sectionId: teacherSections.sectionId })
+      .from(teacherSections)
+      .where(eq(teacherSections.userId, userId));
+
+    return rows.map((row) => row.sectionId);
+  }
+
+  async replaceTeacherSections(userId: number, sectionIds: number[]): Promise<void> {
+    await db.delete(teacherSections).where(eq(teacherSections.userId, userId));
+    if (sectionIds.length === 0) return;
+
+    await db.insert(teacherSections).values(
+      sectionIds.map((sectionId) => ({
+        userId,
+        sectionId,
+      })),
+    );
   }
 
   async getStudents(schoolId: number, search?: string): Promise<any[]> {
@@ -330,6 +378,204 @@ export class DatabaseStorage implements IStorage {
       const [created] = await db.select().from(students).where(eq(students.id, id));
       return { ...created, wasUpdate: false };
     }
+  }
+
+  async bulkPromoteStudents(
+    schoolId: number,
+    items: Array<{
+      studentId: number;
+      action: "promote" | "retain" | "graduate" | "transfer_out";
+      targetGradeLevelId?: number | null;
+      targetSectionId?: number | null;
+    }>
+  ): Promise<{
+    total: number;
+    promoted: number;
+    retained: number;
+    graduated: number;
+    transferredOut: number;
+  }> {
+    if (items.length === 0) {
+      return {
+        total: 0,
+        promoted: 0,
+        retained: 0,
+        graduated: 0,
+        transferredOut: 0,
+      };
+    }
+
+    const studentIds = items.map((item) => item.studentId);
+    const targetGradeIds = Array.from(
+      new Set(items.map((item) => item.targetGradeLevelId).filter((value): value is number => Boolean(value))),
+    );
+    const targetSectionIds = Array.from(
+      new Set(items.map((item) => item.targetSectionId).filter((value): value is number => Boolean(value))),
+    );
+
+    const schoolStudents = await db
+      .select()
+      .from(students)
+      .where(and(eq(students.schoolId, schoolId), inArray(students.id, studentIds)));
+
+    if (schoolStudents.length !== studentIds.length) {
+      throw new Error("One or more students were not found in the selected school.");
+    }
+
+    const grades = targetGradeIds.length
+      ? await db
+          .select()
+          .from(gradeLevels)
+          .where(and(eq(gradeLevels.schoolId, schoolId), inArray(gradeLevels.id, targetGradeIds)))
+      : [];
+    const sectionsForSchool = targetSectionIds.length
+      ? await db
+          .select()
+          .from(sections)
+          .where(and(eq(sections.schoolId, schoolId), inArray(sections.id, targetSectionIds)))
+      : [];
+
+    const gradeById = new Map(grades.map((grade) => [grade.id, grade]));
+    const sectionById = new Map(sectionsForSchool.map((section) => [section.id, section]));
+
+    for (const item of items) {
+      if (item.action === "promote" && !item.targetGradeLevelId) {
+        throw new Error("Each promoted student must have a target grade level.");
+      }
+
+      if (item.targetGradeLevelId && !gradeById.has(item.targetGradeLevelId)) {
+        throw new Error("A selected target grade level does not belong to this school.");
+      }
+
+      if (item.targetSectionId) {
+        const section = sectionById.get(item.targetSectionId);
+        if (!section) {
+          throw new Error("A selected target section does not belong to this school.");
+        }
+
+        const expectedGradeLevelId =
+          item.action === "promote" ? item.targetGradeLevelId : item.targetGradeLevelId ?? schoolStudents.find((student) => student.id === item.studentId)?.gradeLevelId;
+
+        if (expectedGradeLevelId && section.gradeLevelId !== expectedGradeLevelId) {
+          throw new Error("Target section must belong to the selected target grade level.");
+        }
+      }
+    }
+
+    await db.transaction(async (tx) => {
+      for (const item of items) {
+        const currentStudent = schoolStudents.find((student) => student.id === item.studentId);
+        if (!currentStudent) continue;
+
+        if (item.action === "promote") {
+          await tx
+            .update(students)
+            .set({
+              gradeLevelId: item.targetGradeLevelId ?? currentStudent.gradeLevelId,
+              sectionId: item.targetSectionId ?? null,
+              isActive: true,
+            })
+            .where(eq(students.id, item.studentId));
+          continue;
+        }
+
+        if (item.action === "retain") {
+          await tx
+            .update(students)
+            .set({
+              gradeLevelId: currentStudent.gradeLevelId,
+              sectionId: item.targetSectionId ?? currentStudent.sectionId ?? null,
+              isActive: true,
+            })
+            .where(eq(students.id, item.studentId));
+          continue;
+        }
+
+        if (item.action === "graduate") {
+          await tx
+            .update(students)
+            .set({
+              sectionId: null,
+              isActive: false,
+            })
+            .where(eq(students.id, item.studentId));
+          continue;
+        }
+
+        if (item.action === "transfer_out") {
+          await tx
+            .update(students)
+            .set({
+              sectionId: null,
+              isActive: false,
+            })
+            .where(eq(students.id, item.studentId));
+        }
+      }
+    });
+
+    return {
+      total: items.length,
+      promoted: items.filter((item) => item.action === "promote").length,
+      retained: items.filter((item) => item.action === "retain").length,
+      graduated: items.filter((item) => item.action === "graduate").length,
+      transferredOut: items.filter((item) => item.action === "transfer_out").length,
+    };
+  }
+
+  async bulkAssignStudentsToSection(
+    schoolId: number,
+    studentIds: number[],
+    sectionId: number | null
+  ): Promise<{
+    total: number;
+    assigned: number;
+    cleared: number;
+  }> {
+    if (studentIds.length === 0) {
+      return { total: 0, assigned: 0, cleared: 0 };
+    }
+
+    const schoolStudents = await db
+      .select()
+      .from(students)
+      .where(and(eq(students.schoolId, schoolId), inArray(students.id, studentIds)));
+
+    if (schoolStudents.length !== studentIds.length) {
+      throw new Error("One or more selected students were not found in this school.");
+    }
+
+    let targetSection: Section | undefined;
+    if (sectionId !== null) {
+      const [section] = await db
+        .select()
+        .from(sections)
+        .where(and(eq(sections.schoolId, schoolId), eq(sections.id, sectionId)));
+
+      if (!section) {
+        throw new Error("Selected section was not found in this school.");
+      }
+
+      targetSection = section;
+    }
+
+    await db.transaction(async (tx) => {
+      for (const studentId of studentIds) {
+        await tx
+          .update(students)
+          .set({
+            sectionId,
+            gradeLevelId: targetSection ? targetSection.gradeLevelId : null,
+          })
+          .where(eq(students.id, studentId));
+      }
+    });
+
+    return {
+      total: studentIds.length,
+      assigned: targetSection ? studentIds.length : 0,
+      cleared: targetSection ? 0 : studentIds.length,
+    };
   }
 
   async getGradeLevels(schoolId: number): Promise<GradeLevel[]> {
@@ -535,6 +781,8 @@ export class DatabaseStorage implements IStorage {
         studentId: students.id,
         studentName: sql<string>`CONCAT(${students.firstName}, ' ', ${students.lastName})`,
         studentNo: students.studentNo,
+        gradeLevelId: students.gradeLevelId,
+        sectionId: students.sectionId,
         gradeLevel: gradeLevels.name,
         section: sections.name,
         guardianPhone: students.guardianPhone,
@@ -720,6 +968,17 @@ export class DatabaseStorage implements IStorage {
       )
       .groupBy(dailyAttendances.status);
 
+    const [{ count: lateCount }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(dailyAttendances)
+      .where(
+        and(
+          eq(dailyAttendances.schoolId, schoolId),
+          eq(dailyAttendances.date, date),
+          eq(dailyAttendances.isLate, true),
+        ),
+      );
+
     const [{ count: totalActive }] = await db
       .select({ count: sql<number>`count(*)` })
       .from(students)
@@ -731,16 +990,13 @@ export class DatabaseStorage implements IStorage {
     }
 
     const checkedIn = Object.values(statusMap).reduce((a, b) => a + b, 0);
-    const presentAggregated =
-      (statusMap["present"] || 0) +
-      (statusMap["late"] || 0) +
-      (statusMap["pending_checkout"] || 0);
+    const onCampus = (statusMap["late"] || 0) + (statusMap["pending_checkout"] || 0);
 
     return {
       isHoliday,
-      present: presentAggregated,
-      late: statusMap["late"] || 0,
-      pendingCheckout: statusMap["pending_checkout"] || 0,
+      checkedOut: statusMap["present"] || 0,
+      lateArrivals: lateCount || 0,
+      onCampus,
       absent: statusMap["absent"] || 0,
       notCheckedIn: isHoliday ? 0 : totalActive - checkedIn,
       total: totalActive,
@@ -774,22 +1030,54 @@ export class DatabaseStorage implements IStorage {
         sectionMap.set(key, {
           section: row.section || "No Section",
           gradeLevel: row.gradeLevel || "No Grade",
-          present: 0,
-          late: 0,
+          checkedOut: 0,
+          lateArrivals: 0,
           absent: 0,
-          pendingCheckout: 0,
+          onCampus: 0,
           total: 0,
         });
       }
       const s = sectionMap.get(key);
-      s[row.status === "pending_checkout" ? "pendingCheckout" : row.status] = row.count;
+      if (row.status === "present") s.checkedOut = row.count;
+      if (row.status === "absent") s.absent = row.count;
+      if (row.status === "late") {
+        s.lateArrivals += row.count;
+        s.onCampus += row.count;
+      }
+      if (row.status === "pending_checkout") {
+        s.onCampus += row.count;
+      }
       s.total += row.count;
     }
 
-    return Array.from(sectionMap.values()).map((s) => ({
-      ...s,
-      present: (s.present || 0) + (s.late || 0) + (s.pendingCheckout || 0),
-    }));
+    const lateRows = await db
+      .select({
+        section: sections.name,
+        gradeLevel: gradeLevels.name,
+        count: sql<number>`count(*)`,
+      })
+      .from(dailyAttendances)
+      .innerJoin(students, eq(dailyAttendances.studentId, students.id))
+      .leftJoin(sections, eq(students.sectionId, sections.id))
+      .leftJoin(gradeLevels, eq(students.gradeLevelId, gradeLevels.id))
+      .where(
+        and(
+          eq(dailyAttendances.schoolId, schoolId),
+          eq(dailyAttendances.date, date),
+          eq(dailyAttendances.isLate, true),
+        ),
+      )
+      .groupBy(sections.name, gradeLevels.name);
+
+    for (const row of lateRows) {
+      const key = `${row.section || "No Section"}-${row.gradeLevel || "No Grade"}`;
+      const s = sectionMap.get(key);
+      if (s) {
+        s.lateArrivals = row.count;
+      }
+    }
+
+    return Array.from(sectionMap.values());
   }
 
   async getAttendanceIntelligence(schoolId: number, date: string): Promise<any> {
@@ -987,6 +1275,8 @@ export class DatabaseStorage implements IStorage {
         attendanceId: dailyAttendances.id,
         studentName: sql<string>`CONCAT(${students.firstName}, ' ', ${students.lastName})`,
         studentNo: students.studentNo,
+        gradeLevelId: students.gradeLevelId,
+        sectionId: students.sectionId,
         gradeLevel: gradeLevels.name,
         section: sections.name,
         date: dailyAttendances.date,

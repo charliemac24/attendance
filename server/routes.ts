@@ -63,6 +63,19 @@ async function getSchoolId(req: Request): Promise<number | null> {
   return user.schoolId;
 }
 
+async function getSectionScopeForUser(req: Request, schoolId: number | null): Promise<number[] | null> {
+  if (!req.session.userId || !schoolId) return null;
+  const user = await storage.getUserById(req.session.userId);
+  if (!user || user.role !== "teacher") return null;
+  return await storage.getTeacherSectionIds(user.id);
+}
+
+function filterRecordsToSectionScope<T extends { sectionId?: number | null }>(records: T[], sectionIds: number[] | null): T[] {
+  if (sectionIds === null) return records;
+  const allowed = new Set(sectionIds);
+  return records.filter((record) => record.sectionId !== null && record.sectionId !== undefined && allowed.has(Number(record.sectionId)));
+}
+
 function normalizePhone(phone: string): string {
   const digits = phone.replace(/[^0-9]/g, "");
   if (digits.startsWith("0") && digits.length === 11) {
@@ -711,7 +724,18 @@ export async function registerRoutes(
         userList = await storage.getUsersBySchool(user.schoolId);
       }
 
-      const sanitized = userList.map(({ password: _, ...u }) => u);
+      const teacherIds = userList.filter((u) => u.role === "teacher").map((u) => u.id);
+      const teacherSectionsByUser = new Map<number, number[]>();
+      await Promise.all(
+        teacherIds.map(async (teacherId) => {
+          teacherSectionsByUser.set(teacherId, await storage.getTeacherSectionIds(teacherId));
+        }),
+      );
+
+      const sanitized = userList.map(({ password: _, ...u }) => ({
+        ...u,
+        teacherSectionIds: teacherSectionsByUser.get(u.id) || [],
+      }));
       res.json(sanitized);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -723,7 +747,7 @@ export async function registerRoutes(
       const currentUser = await storage.getUserById(req.session.userId!);
       if (!currentUser) return res.status(401).json({ message: "User not found" });
 
-      const { username, password, fullName, email, role, schoolId: targetSchoolId } = req.body;
+      const { username, password, fullName, email, role, schoolId: targetSchoolId, teacherSectionIds } = req.body;
 
       if (currentUser.role === "school_admin") {
         if (!["gate_staff", "teacher"].includes(role)) {
@@ -735,6 +759,19 @@ export async function registerRoutes(
       }
 
       const assignSchoolId = currentUser.role === "super_admin" ? targetSchoolId : currentUser.schoolId;
+      if ((role === "teacher" || Array.isArray(teacherSectionIds)) && !assignSchoolId) {
+        return res.status(400).json({ message: "Teacher accounts must belong to a school." });
+      }
+
+      if (role === "teacher" && Array.isArray(teacherSectionIds) && teacherSectionIds.length > 0) {
+        const schoolSections = await storage.getSections(assignSchoolId);
+        const validSectionIds = new Set(schoolSections.map((section: any) => section.id));
+        const hasInvalid = teacherSectionIds.some((sectionId: any) => !validSectionIds.has(Number(sectionId)));
+        if (hasInvalid) {
+          return res.status(400).json({ message: "One or more assigned sections are invalid for the selected school." });
+        }
+      }
+
       const newUser = await storage.createUser({
         username,
         password,
@@ -744,8 +781,20 @@ export async function registerRoutes(
         schoolId: assignSchoolId,
       });
 
+      if (role === "teacher") {
+        await storage.replaceTeacherSections(
+          newUser.id,
+          Array.isArray(teacherSectionIds) ? teacherSectionIds.map((sectionId: any) => Number(sectionId)) : [],
+        );
+      }
+
       const { password: _, ...userWithoutPw } = newUser;
-      res.json(userWithoutPw);
+      res.json({
+        ...userWithoutPw,
+        teacherSectionIds: role === "teacher"
+          ? (Array.isArray(teacherSectionIds) ? teacherSectionIds.map((sectionId: any) => Number(sectionId)) : [])
+          : [],
+      });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -778,10 +827,41 @@ export async function registerRoutes(
         updateData.schoolId = req.body.schoolId;
       }
 
+      const nextSchoolId =
+        updateData.schoolId !== undefined
+          ? updateData.schoolId
+          : targetUser.schoolId;
+      const nextRole = updateData.role || targetUser.role;
+
+      if (nextRole === "teacher" && Array.isArray(req.body.teacherSectionIds) && req.body.teacherSectionIds.length > 0) {
+        if (!nextSchoolId) {
+          return res.status(400).json({ message: "Teacher accounts must belong to a school." });
+        }
+        const schoolSections = await storage.getSections(nextSchoolId);
+        const validSectionIds = new Set(schoolSections.map((section: any) => section.id));
+        const hasInvalid = req.body.teacherSectionIds.some((sectionId: any) => !validSectionIds.has(Number(sectionId)));
+        if (hasInvalid) {
+          return res.status(400).json({ message: "One or more assigned sections are invalid for this school." });
+        }
+      }
+
       const updated = await storage.updateUser(Number(req.params.id), updateData);
       if (!updated) return res.status(404).json({ message: "User not found" });
+
+      if (nextRole === "teacher") {
+        await storage.replaceTeacherSections(
+          updated.id,
+          Array.isArray(req.body.teacherSectionIds) ? req.body.teacherSectionIds.map((sectionId: any) => Number(sectionId)) : [],
+        );
+      } else {
+        await storage.replaceTeacherSections(updated.id, []);
+      }
+
       const { password: _, ...userWithoutPw } = updated;
-      res.json(userWithoutPw);
+      res.json({
+        ...userWithoutPw,
+        teacherSectionIds: nextRole === "teacher" ? await storage.getTeacherSectionIds(updated.id) : [],
+      });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -860,6 +940,10 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json({ records: [], total: 0, page: 1, pageSize: 20 });
+      const sectionScope = await getSectionScopeForUser(req, schoolId);
+      if (sectionScope && sectionScope.length === 0) {
+        return res.json({ records: [], total: 0, page: 1, pageSize: 20 });
+      }
       const school = await storage.getSchool(schoolId);
       if (!school) return res.json({ records: [], total: 0, page: 1, pageSize: 20 });
 
@@ -878,7 +962,8 @@ export async function registerRoutes(
           sectionFilter && sectionFilter !== "all" ? Number(sectionFilter) : undefined,
           page, pageSize
         );
-        return res.json({ ...result, page, pageSize });
+        const scopedRecords = filterRecordsToSectionScope(result.records, sectionScope);
+        return res.json({ records: scopedRecords, total: scopedRecords.length, page, pageSize });
       }
 
       let records: any[] = [];
@@ -910,10 +995,15 @@ export async function registerRoutes(
         ]);
         records = [...pendingRecords, ...lateRecords];
       } else if (status === "present") {
-        records = await storage.getAttendancesBySchoolAndDate(schoolId, date, ["present", "late", "pending_checkout"]);
+        records = await storage.getAttendancesBySchoolAndDate(schoolId, date, "present");
+      } else if (status === "late") {
+        records = (await storage.getAttendancesBySchoolAndDate(schoolId, date, ["present", "late", "pending_checkout"]))
+          .filter((record: any) => Boolean(record.isLate));
       } else {
         records = await storage.getAttendancesBySchoolAndDate(schoolId, date, status as string);
       }
+
+      records = filterRecordsToSectionScope(records, sectionScope);
 
       if (search) {
         const s = search.toLowerCase();
@@ -948,8 +1038,9 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json([]);
+      const sectionScope = await getSectionScopeForUser(req, schoolId);
       const search = req.query.search as string;
-      const results = await storage.getStudents(schoolId, search);
+      const results = filterRecordsToSectionScope(await storage.getStudents(schoolId, search), sectionScope);
       res.json(results);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -1018,6 +1109,78 @@ export async function registerRoutes(
       };
       const student = await storage.updateStudent(Number(req.params.id), payload);
       res.json(student);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/students/promotions/apply", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(400).json({ message: "No school context" });
+
+      const items = Array.isArray(req.body?.items) ? req.body.items : [];
+      if (items.length === 0) {
+        return res.status(400).json({ message: "Select at least one student to promote." });
+      }
+
+      const normalizedItems = items.map((item: any) => ({
+        studentId: Number(item.studentId),
+        action: String(item.action || "").trim(),
+        targetGradeLevelId:
+          item.targetGradeLevelId === null || item.targetGradeLevelId === undefined || item.targetGradeLevelId === ""
+            ? null
+            : Number(item.targetGradeLevelId),
+        targetSectionId:
+          item.targetSectionId === null || item.targetSectionId === undefined || item.targetSectionId === ""
+            ? null
+            : Number(item.targetSectionId),
+      }));
+
+      const allowedActions = new Set(["promote", "retain", "graduate", "transfer_out"]);
+      for (const item of normalizedItems) {
+        if (!Number.isFinite(item.studentId) || item.studentId <= 0) {
+          return res.status(400).json({ message: "Each promotion item must include a valid student." });
+        }
+        if (!allowedActions.has(item.action)) {
+          return res.status(400).json({ message: "Invalid promotion action provided." });
+        }
+        if (item.targetGradeLevelId !== null && (!Number.isFinite(item.targetGradeLevelId) || item.targetGradeLevelId <= 0)) {
+          return res.status(400).json({ message: "Invalid target grade level provided." });
+        }
+        if (item.targetSectionId !== null && (!Number.isFinite(item.targetSectionId) || item.targetSectionId <= 0)) {
+          return res.status(400).json({ message: "Invalid target section provided." });
+        }
+      }
+
+      const result = await storage.bulkPromoteStudents(schoolId, normalizedItems);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/students/bulk-assign-section", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(400).json({ message: "No school context" });
+
+      const studentIds = Array.isArray(req.body?.studentIds) ? req.body.studentIds.map((value: any) => Number(value)) : [];
+      const sectionId =
+        req.body?.sectionId === null || req.body?.sectionId === undefined || req.body?.sectionId === ""
+          ? null
+          : Number(req.body.sectionId);
+
+      if (studentIds.length === 0 || studentIds.some((value) => !Number.isFinite(value) || value <= 0)) {
+        return res.status(400).json({ message: "Select at least one valid student." });
+      }
+
+      if (sectionId !== null && (!Number.isFinite(sectionId) || sectionId <= 0)) {
+        return res.status(400).json({ message: "Select a valid section." });
+      }
+
+      const result = await storage.bulkAssignStudentsToSection(schoolId, studentIds, sectionId);
+      res.json(result);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -1155,7 +1318,17 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json([]);
-      res.json(await storage.getGradeLevels(schoolId));
+      const sectionScope = await getSectionScopeForUser(req, schoolId);
+      const grades = await storage.getGradeLevels(schoolId);
+      if (sectionScope === null) return res.json(grades);
+
+      const scopedSections = await storage.getSections(schoolId);
+      const visibleGradeIds = new Set(
+        scopedSections
+          .filter((section: any) => sectionScope.includes(section.id))
+          .map((section: any) => section.gradeLevelId),
+      );
+      res.json(grades.filter((grade) => visibleGradeIds.has(grade.id)));
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -1193,7 +1366,10 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json([]);
-      res.json(await storage.getSections(schoolId));
+      const sectionScope = await getSectionScopeForUser(req, schoolId);
+      const allSections = await storage.getSections(schoolId);
+      if (sectionScope === null) return res.json(allSections);
+      res.json(allSections.filter((section: any) => sectionScope.includes(section.id)));
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -1893,14 +2069,16 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json([]);
+      const sectionScope = await getSectionScopeForUser(req, schoolId);
+      if (sectionScope && sectionScope.length === 0) return res.json([]);
       const { startDate, endDate, grade, section, studentName, studentNo } = req.query;
-      const records = await storage.getAttendanceReport(
+      const records = filterRecordsToSectionScope(await storage.getAttendanceReport(
         schoolId,
         startDate as string || new Date().toISOString().split("T")[0],
         endDate as string || new Date().toISOString().split("T")[0],
         grade && grade !== "all" ? Number(grade) : undefined,
         section && section !== "all" ? Number(section) : undefined,
-      );
+      ), sectionScope);
       const normalized = normalizeDailyReportStatuses(records);
       const nameFilter = String(studentName || "").trim().toLowerCase();
       const studentNoFilter = String(studentNo || "").trim().toLowerCase();
@@ -1919,15 +2097,17 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json([]);
+      const sectionScope = await getSectionScopeForUser(req, schoolId);
+      if (sectionScope && sectionScope.length === 0) return res.json([]);
       const { startDate, endDate, grade, section, studentName, studentNo } = req.query;
 
-      const allRecords = await storage.getAttendanceReport(
+      const allRecords = filterRecordsToSectionScope(await storage.getAttendanceReport(
         schoolId,
         startDate as string || new Date().toISOString().split("T")[0],
         endDate as string || new Date().toISOString().split("T")[0],
         grade && grade !== "all" ? Number(grade) : undefined,
         section && section !== "all" ? Number(section) : undefined,
-      );
+      ), sectionScope);
 
       const nameFilter = String(studentName || "").trim().toLowerCase();
       const studentNoFilter = String(studentNo || "").trim().toLowerCase();
@@ -1948,15 +2128,17 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json([]);
+      const sectionScope = await getSectionScopeForUser(req, schoolId);
+      if (sectionScope && sectionScope.length === 0) return res.json([]);
       const { startDate, endDate, grade, section, studentName, studentNo } = req.query;
 
-      const allRecords = await storage.getAttendanceReport(
+      const allRecords = filterRecordsToSectionScope(await storage.getAttendanceReport(
         schoolId,
         startDate as string || new Date().toISOString().split("T")[0],
         endDate as string || new Date().toISOString().split("T")[0],
         grade && grade !== "all" ? Number(grade) : undefined,
         section && section !== "all" ? Number(section) : undefined,
-      );
+      ), sectionScope);
 
       const nameFilter = String(studentName || "").trim().toLowerCase();
       const studentNoFilter = String(studentNo || "").trim().toLowerCase();
@@ -1994,6 +2176,8 @@ export async function registerRoutes(
 
   app.get("/api/reports/sms-usage", requireAuth, async (req, res) => {
     try {
+      const user = await storage.getUserById(req.session.userId!);
+      if (user?.role === "teacher") return res.status(403).json({ message: "Forbidden" });
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json([]);
       const { startDate, endDate } = req.query;
@@ -2061,11 +2245,16 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.status(404).json({ message: "No school" });
+      const user = await storage.getUserById(req.session.userId!);
+      const sectionScope = await getSectionScopeForUser(req, schoolId);
       const { startDate, endDate, grade, section } = req.query;
       const { type } = req.params;
 
       let data: any[];
       if (type === "sms-usage") {
+        if (user?.role === "teacher") {
+          return res.status(403).json({ message: "Forbidden" });
+        }
         data = await storage.getSmsUsageReport(
           schoolId,
           startDate as string || new Date().toISOString().split("T")[0],
@@ -2114,13 +2303,13 @@ export async function registerRoutes(
           };
         });
       } else {
-        data = await storage.getAttendanceReport(
+        data = filterRecordsToSectionScope(await storage.getAttendanceReport(
           schoolId,
           startDate as string || new Date().toISOString().split("T")[0],
           endDate as string || new Date().toISOString().split("T")[0],
           grade && grade !== "all" ? Number(grade) : undefined,
           section && section !== "all" ? Number(section) : undefined,
-        );
+        ), sectionScope);
         if (type === "daily") {
           data = normalizeDailyReportStatuses(data);
           const nameFilter = String(req.query.studentName || "").trim().toLowerCase();

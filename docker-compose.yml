@@ -3,7 +3,7 @@ services:
     image: mysql:8.4
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: attendance
+      MYSQL_DATABASE: nssgsjhj_myo_attendance
       MYSQL_USER: attendance
       MYSQL_PASSWORD: attendance
       MYSQL_ROOT_PASSWORD: rootpassword
@@ -11,32 +11,23 @@ services:
       - "3317:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+      - ./nssgsjhj_myo_attendance.sql:/docker-entrypoint-initdb.d/001-live.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD"]
       interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 30
 
   app:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    develop:
-      watch:
-        - path: .
-          action: rebuild
-          ignore:
-            - node_modules/**
-            - dist/**
-            - release/**
-            - uploads/**
-            - docker-compose.yml
     depends_on:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: mysql://attendance:attendance@db:3306/attendance
+      DATABASE_URL: mysql://attendance:attendance@db:3306/nssgsjhj_myo_attendance
       SESSION_SECRET: replace-with-a-long-random-secret
       NODE_ENV: production
       PORT: 5000
@@ -44,6 +35,7 @@ services:
       - "5100:5000"
     volumes:
       - ./uploads:/app/uploads
+      - ./tmp:/app/tmp
 
   phpmyadmin:
     image: phpmyadmin:5-apache

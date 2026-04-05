@@ -26,9 +26,9 @@ import {
 import type { GradeLevel, Section } from "@shared/schema";
 
 const statusConfig: Record<string, { title: string; icon: any; description: string }> = {
-  present: { title: "Present Students", icon: UserCheck, description: "Students who have checked out" },
-  late: { title: "Late Students", icon: Clock, description: "Students who arrived late" },
-  "pending-checkout": { title: "Pending Checkout", icon: AlertTriangle, description: "Students still checked in" },
+  present: { title: "Checked Out Students", icon: UserCheck, description: "Students who completed check-out for the day" },
+  late: { title: "Late Arrivals", icon: Clock, description: "Students who arrived late, whether still on campus or already checked out" },
+  "pending-checkout": { title: "On Campus", icon: AlertTriangle, description: "Students who checked in but have not checked out yet" },
   absent: { title: "Absent Students", icon: UserX, description: "Students marked absent" },
   "not-checked-in-yet": { title: "Not Checked In Yet", icon: HelpCircle, description: "Students with no attendance record" },
 };
@@ -73,14 +73,18 @@ export default function TodayStatusPage() {
     queryKey: [
       `/api/today/${apiStatus}?date=${selectedDate}&search=${search}&grade=${gradeFilter}&section=${sectionFilter}&page=${page}`,
     ],
+    refetchInterval: 15000,
+    refetchOnWindowFocus: true,
   });
 
   const { data: gradeLevels } = useQuery<GradeLevel[]>({
     queryKey: ["/api/grade-levels"],
+    refetchOnWindowFocus: true,
   });
 
   const { data: sections } = useQuery<Section[]>({
     queryKey: ["/api/sections"],
+    refetchOnWindowFocus: true,
   });
 
   const manualAction = useMutation({
