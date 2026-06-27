@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, and, sql, like, or, inArray, gte, lte, desc } from "drizzle-orm";
+import { eq, and, sql, like, or, inArray, gte, lte, desc, not } from "drizzle-orm";
 import {
   schools, users, students, gradeLevels, sections,
   kioskLocations, dailyAttendances, attendanceEvents,
@@ -16,6 +16,7 @@ import {
   type SmsLog, type InsertSmsLog,
   type SchoolHoliday, type InsertSchoolHoliday,
 } from "@shared/schema";
+import { getGradeLevelSortRank, normalizeGradeLevelName } from "@shared/grade-levels";
 import bcrypt from "bcryptjs";
 import { randomBytes } from "crypto";
 
@@ -53,7 +54,7 @@ export interface IStorage {
   replaceTeacherSections(userId: number, sectionIds: number[]): Promise<void>;
 
   // Students
-  getStudents(schoolId: number, search?: string): Promise<any[]>;
+  getStudents(schoolId: number, search?: string, status?: "active" | "inactive" | "all"): Promise<any[]>;
   getStudent(id: number): Promise<Student | undefined>;
   getStudentByQrToken(qrToken: string): Promise<Student | undefined>;
   getActiveStudents(schoolId: number): Promise<Student[]>;
@@ -61,6 +62,7 @@ export interface IStorage {
   updateStudent(id: number, data: Partial<InsertStudent>): Promise<Student | undefined>;
   deleteStudent(id: number): Promise<void>;
   upsertStudentBySchoolAndNo(schoolId: number, studentNo: string, data: Partial<InsertStudent>): Promise<Student & { wasUpdate: boolean }>;
+  deactivateStudentsMissingFromRoster(schoolId: number, activeStudentNos: string[]): Promise<number>;
   bulkPromoteStudents(
     schoolId: number,
     items: Array<{
@@ -111,11 +113,12 @@ export interface IStorage {
   updateDailyAttendance(id: number, data: Partial<InsertDailyAttendance>): Promise<DailyAttendance | undefined>;
   deleteAttendanceById(schoolId: number, attendanceId: number): Promise<boolean>;
   getAttendancesBySchoolAndDate(schoolId: number, date: string, status?: string): Promise<any[]>;
-  getStudentsNotCheckedIn(schoolId: number, date: string, search?: string, gradeId?: number, sectionId?: number, page?: number, pageSize?: number): Promise<{ records: any[]; total: number }>;
+  getStudentsNotCheckedIn(schoolId: number, date: string, search?: string, gradeId?: number, sectionId?: number, page?: number, pageSize?: number, allowedSectionIds?: number[] | null): Promise<{ records: any[]; total: number }>;
 
   // Attendance Events
   createAttendanceEvent(data: InsertAttendanceEvent): Promise<AttendanceEvent>;
   getRecentEvents(schoolId: number, limit?: number): Promise<any[]>;
+  clearRecentEvents(schoolId: number): Promise<number>;
 
   // SMS Templates
   getSmsTemplates(schoolId: number): Promise<SmsTemplate[]>;
@@ -140,7 +143,7 @@ export interface IStorage {
 
   // Dashboard
   getDashboardKpis(schoolId: number, date: string): Promise<any>;
-  getSectionBreakdown(schoolId: number, date: string): Promise<any[]>;
+  getGradeAttendanceBreakdown(schoolId: number, date: string): Promise<any[]>;
   getAttendanceIntelligence(schoolId: number, date: string): Promise<any>;
 
   // Reports
@@ -277,7 +280,7 @@ export class DatabaseStorage implements IStorage {
     );
   }
 
-  async getStudents(schoolId: number, search?: string): Promise<any[]> {
+  async getStudents(schoolId: number, search?: string, status: "active" | "inactive" | "all" = "all"): Promise<any[]> {
     let query = db
       .select({
         id: students.id,
@@ -301,10 +304,20 @@ export class DatabaseStorage implements IStorage {
       .where(eq(students.schoolId, schoolId))
       .$dynamic();
 
+    if (status !== "all") {
+      query = query.where(
+        and(
+          eq(students.schoolId, schoolId),
+          eq(students.isActive, status === "active"),
+        )
+      );
+    }
+
     if (search) {
       query = query.where(
         and(
           eq(students.schoolId, schoolId),
+          ...(status === "all" ? [] : [eq(students.isActive, status === "active")]),
           or(
             like(students.firstName, `%${search}%`),
             like(students.lastName, `%${search}%`),
@@ -378,6 +391,31 @@ export class DatabaseStorage implements IStorage {
       const [created] = await db.select().from(students).where(eq(students.id, id));
       return { ...created, wasUpdate: false };
     }
+  }
+
+  async deactivateStudentsMissingFromRoster(schoolId: number, activeStudentNos: string[]): Promise<number> {
+    const conditions = [
+      eq(students.schoolId, schoolId),
+      eq(students.isActive, true),
+    ];
+
+    if (activeStudentNos.length > 0) {
+      conditions.push(not(inArray(students.studentNo, activeStudentNos)));
+    }
+
+    const toDeactivate = await db
+      .select({ id: students.id })
+      .from(students)
+      .where(and(...conditions));
+
+    if (toDeactivate.length === 0) return 0;
+
+    await db
+      .update(students)
+      .set({ isActive: false })
+      .where(inArray(students.id, toDeactivate.map((student) => student.id)));
+
+    return toDeactivate.length;
   }
 
   async bulkPromoteStudents(
@@ -583,13 +621,19 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createGradeLevel(data: InsertGradeLevel): Promise<GradeLevel> {
-    const [{ id }] = await db.insert(gradeLevels).values(data).$returningId();
+    const [{ id }] = await db.insert(gradeLevels).values({
+      ...data,
+      name: normalizeGradeLevelName(data.name),
+    }).$returningId();
     const [gl] = await db.select().from(gradeLevels).where(eq(gradeLevels.id, id));
     return gl!;
   }
 
   async updateGradeLevel(id: number, data: Partial<InsertGradeLevel>): Promise<GradeLevel | undefined> {
-    await db.update(gradeLevels).set(data).where(eq(gradeLevels.id, id));
+    await db.update(gradeLevels).set({
+      ...data,
+      ...(typeof data.name === "string" ? { name: normalizeGradeLevelName(data.name) } : {}),
+    }).where(eq(gradeLevels.id, id));
     const [gl] = await db.select().from(gradeLevels).where(eq(gradeLevels.id, id));
     return gl;
   }
@@ -599,11 +643,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async findOrCreateGradeLevel(schoolId: number, name: string): Promise<GradeLevel> {
+    const normalizedName = normalizeGradeLevelName(name);
     const existing = await db.select().from(gradeLevels).where(
-      and(eq(gradeLevels.schoolId, schoolId), eq(gradeLevels.name, name))
+      and(eq(gradeLevels.schoolId, schoolId), eq(gradeLevels.name, normalizedName))
     );
     if (existing.length > 0) return existing[0];
-    const [{ id }] = await db.insert(gradeLevels).values({ schoolId, name }).$returningId();
+    const [{ id }] = await db.insert(gradeLevels).values({ schoolId, name: normalizedName }).$returningId();
     const [created] = await db.select().from(gradeLevels).where(eq(gradeLevels.id, id));
     return created;
   }
@@ -734,7 +779,8 @@ export class DatabaseStorage implements IStorage {
     gradeId?: number,
     sectionId?: number,
     page: number = 1,
-    pageSize: number = 20
+    pageSize: number = 20,
+    allowedSectionIds: number[] | null = null,
   ): Promise<{ records: any[]; total: number }> {
     const isHoliday = await this.isHoliday(schoolId, date);
     if (isHoliday) {
@@ -768,6 +814,9 @@ export class DatabaseStorage implements IStorage {
     }
     if (gradeId) conditions.push(eq(students.gradeLevelId, gradeId));
     if (sectionId) conditions.push(eq(students.sectionId, sectionId));
+    if (allowedSectionIds && allowedSectionIds.length > 0) {
+      conditions.push(inArray(students.sectionId, allowedSectionIds));
+    }
 
     const whereClause = and(...conditions);
 
@@ -824,6 +873,21 @@ export class DatabaseStorage implements IStorage {
       .where(eq(attendanceEvents.schoolId, schoolId))
       .orderBy(desc(attendanceEvents.occurredAt))
       .limit(limit);
+  }
+
+  async clearRecentEvents(schoolId: number): Promise<number> {
+    const events = await db
+      .select({ id: attendanceEvents.id })
+      .from(attendanceEvents)
+      .where(eq(attendanceEvents.schoolId, schoolId));
+
+    if (events.length === 0) return 0;
+
+    await db
+      .delete(attendanceEvents)
+      .where(inArray(attendanceEvents.id, events.map((event) => event.id)));
+
+    return events.length;
   }
 
   async getSmsTemplates(schoolId: number): Promise<SmsTemplate[]> {
@@ -1003,81 +1067,111 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async getSectionBreakdown(schoolId: number, date: string): Promise<any[]> {
+  async getGradeAttendanceBreakdown(schoolId: number, date: string): Promise<any[]> {
     const isHoliday = await this.isHoliday(schoolId, date);
     if (isHoliday) return [];
 
-    const result = await db
+    const activeStudentsByGrade = await db
       .select({
-        section: sections.name,
         gradeLevel: gradeLevels.name,
-        status: dailyAttendances.status,
         count: sql<number>`count(*)`,
       })
-      .from(dailyAttendances)
-      .innerJoin(students, eq(dailyAttendances.studentId, students.id))
-      .leftJoin(sections, eq(students.sectionId, sections.id))
+      .from(students)
       .leftJoin(gradeLevels, eq(students.gradeLevelId, gradeLevels.id))
       .where(
-        and(eq(dailyAttendances.schoolId, schoolId), eq(dailyAttendances.date, date))
+        and(eq(students.schoolId, schoolId), eq(students.isActive, true))
       )
-      .groupBy(sections.name, gradeLevels.name, dailyAttendances.status);
+      .groupBy(gradeLevels.name);
 
-    const sectionMap = new Map<string, any>();
-    for (const row of result) {
-      const key = `${row.section || "No Section"}-${row.gradeLevel || "No Grade"}`;
-      if (!sectionMap.has(key)) {
-        sectionMap.set(key, {
-          section: row.section || "No Section",
-          gradeLevel: row.gradeLevel || "No Grade",
-          checkedOut: 0,
-          lateArrivals: 0,
-          absent: 0,
-          onCampus: 0,
-          total: 0,
-        });
-      }
-      const s = sectionMap.get(key);
-      if (row.status === "present") s.checkedOut = row.count;
-      if (row.status === "absent") s.absent = row.count;
-      if (row.status === "late") {
-        s.lateArrivals += row.count;
-        s.onCampus += row.count;
-      }
-      if (row.status === "pending_checkout") {
-        s.onCampus += row.count;
-      }
-      s.total += row.count;
-    }
-
-    const lateRows = await db
+    const attendanceRows = await db
       .select({
-        section: sections.name,
         gradeLevel: gradeLevels.name,
+        status: dailyAttendances.status,
+        isLate: dailyAttendances.isLate,
         count: sql<number>`count(*)`,
       })
       .from(dailyAttendances)
       .innerJoin(students, eq(dailyAttendances.studentId, students.id))
-      .leftJoin(sections, eq(students.sectionId, sections.id))
       .leftJoin(gradeLevels, eq(students.gradeLevelId, gradeLevels.id))
       .where(
         and(
           eq(dailyAttendances.schoolId, schoolId),
           eq(dailyAttendances.date, date),
-          eq(dailyAttendances.isLate, true),
+          eq(students.isActive, true),
         ),
       )
-      .groupBy(sections.name, gradeLevels.name);
+      .groupBy(gradeLevels.name, dailyAttendances.status, dailyAttendances.isLate);
 
-    for (const row of lateRows) {
-      const key = `${row.section || "No Section"}-${row.gradeLevel || "No Grade"}`;
-      const s = sectionMap.get(key);
-      if (s) {
-        s.lateArrivals = row.count;
+    const gradeMap = new Map<string, {
+      gradeLevel: string;
+      totalStudents: number;
+      checkedIn: number;
+      checkedOut: number;
+      onCampus: number;
+      absent: number;
+      lateArrivals: number;
+      notCheckedIn: number;
+      attendanceRate: number;
+    }>();
+
+    for (const row of activeStudentsByGrade) {
+      const gradeLevel = normalizeGradeLevelName(row.gradeLevel) || "No Grade";
+      gradeMap.set(gradeLevel, {
+        gradeLevel,
+        totalStudents: row.count,
+        checkedIn: 0,
+        checkedOut: 0,
+        onCampus: 0,
+        absent: 0,
+        lateArrivals: 0,
+        notCheckedIn: row.count,
+        attendanceRate: 0,
+      });
+    }
+
+    for (const row of attendanceRows) {
+      const gradeLevel = normalizeGradeLevelName(row.gradeLevel) || "No Grade";
+      const grade = gradeMap.get(gradeLevel);
+      if (!grade) continue;
+
+      if (row.status === "present") {
+        grade.checkedIn += row.count;
+        grade.checkedOut += row.count;
+      }
+      if (row.status === "pending_checkout") {
+        grade.checkedIn += row.count;
+        grade.onCampus += row.count;
+      }
+      if (row.status === "late") {
+        grade.checkedIn += row.count;
+        grade.onCampus += row.count;
+      }
+      if (row.status === "absent") {
+        grade.absent += row.count;
+      }
+      if (row.isLate) {
+        grade.lateArrivals += row.count;
       }
     }
 
-    return Array.from(sectionMap.values());
+    return Array.from(gradeMap.values())
+      .map((grade) => {
+        const notCheckedIn = Math.max(grade.totalStudents - grade.checkedIn - grade.absent, 0);
+        const attendanceRate = grade.totalStudents > 0
+          ? Math.round((grade.checkedIn / grade.totalStudents) * 1000) / 10
+          : 0;
+
+        return {
+          ...grade,
+          notCheckedIn,
+          attendanceRate,
+        };
+      })
+      .sort((a, b) => {
+        const rankDiff = getGradeLevelSortRank(a.gradeLevel) - getGradeLevelSortRank(b.gradeLevel);
+        if (rankDiff !== 0) return rankDiff;
+        return a.gradeLevel.localeCompare(b.gradeLevel);
+      });
   }
 
   async getAttendanceIntelligence(schoolId: number, date: string): Promise<any> {

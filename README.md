@@ -108,3 +108,6 @@ Notes:
 - Absent auto-marking is not implemented; absent/excused must be set manually (or add a job if desired).
 - Only Semaphore SMS provider is wired.
 
+# Run in CRON JOBS
+curl -X POST http://localhost:5100/api/cron/mark-absent \
+  -H "x-cron-secret: YOUR_SECRET"

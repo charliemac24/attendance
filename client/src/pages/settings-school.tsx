@@ -32,6 +32,7 @@ export default function SettingsSchoolPage() {
     minScanIntervalSeconds: 120,
     dismissalTime: "15:00",
     earlyOutWindowMinutes: 30,
+    showStudentsNeedingAttention: true,
   });
   const [purgeDate, setPurgeDate] = useState<string>(new Date().toISOString().slice(0, 10));
 
@@ -49,6 +50,7 @@ export default function SettingsSchoolPage() {
         minScanIntervalSeconds: school.minScanIntervalSeconds ?? 120,
         dismissalTime: school.dismissalTime?.substring(0, 5) || "15:00",
         earlyOutWindowMinutes: school.earlyOutWindowMinutes ?? 30,
+        showStudentsNeedingAttention: school.showStudentsNeedingAttention ?? true,
       });
     }
   }, [school]);
@@ -149,6 +151,18 @@ export default function SettingsSchoolPage() {
                 data-testid="input-late-time"
               />
             </div>
+            <div className="space-y-2">
+              <Label>Auto Absent Cutoff Time</Label>
+              <Input
+                type="time"
+                value={formData.cutoffTime}
+                onChange={(e) => setFormData({ ...formData, cutoffTime: e.target.value })}
+                data-testid="input-cutoff-time"
+              />
+              <p className="text-sm text-muted-foreground">
+                Students with no attendance record after this time can be marked absent by the cron route.
+              </p>
+            </div>
             <div className="flex items-center justify-between gap-2">
               <div>
                 <Label>SMS Notifications</Label>
@@ -192,6 +206,19 @@ export default function SettingsSchoolPage() {
                   data-testid="input-early-out-window"
                 />
               </div>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <Label>Show "Students Needing Attention" On Dashboard</Label>
+                <p className="text-sm text-muted-foreground">
+                  Hide or show the dashboard panel for attendance risk flags and declining trends.
+                </p>
+              </div>
+              <Switch
+                checked={formData.showStudentsNeedingAttention}
+                onCheckedChange={(v) => setFormData({ ...formData, showStudentsNeedingAttention: v })}
+                data-testid="switch-show-students-needing-attention"
+              />
             </div>
             <Button type="submit" disabled={saveMutation.isPending} data-testid="button-save-settings">
               {saveMutation.isPending ? "Saving..." : "Save Settings"}

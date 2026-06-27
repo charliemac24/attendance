@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Plus, Edit, GraduationCap, Trash2 } from "lucide-react";
+import { normalizeGradeLevelName } from "@shared/grade-levels";
 import type { GradeLevel } from "@shared/schema";
 
 export default function GradeLevelsPage() {
@@ -23,12 +24,14 @@ export default function GradeLevelsPage() {
     queryKey: ["/api/grade-levels"],
   });
 
+  const displayName = (value: string) => normalizeGradeLevelName(value) || value;
+
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (editing) {
-        await apiRequest("PATCH", `/api/grade-levels/${editing.id}`, { name });
+        await apiRequest("PATCH", `/api/grade-levels/${editing.id}`, { name: displayName(name) });
       } else {
-        await apiRequest("POST", "/api/grade-levels", { name });
+        await apiRequest("POST", "/api/grade-levels", { name: displayName(name) });
       }
     },
     onSuccess: () => {
@@ -97,14 +100,14 @@ export default function GradeLevelsPage() {
             <div className="divide-y">
               {gradeLevels.map((gl) => (
                 <div key={gl.id} className="flex items-center justify-between gap-2 px-4 py-3" data-testid={`row-grade-${gl.id}`}>
-                  <span className="font-medium">{gl.name}</span>
+                  <span className="font-medium">{displayName(gl.name)}</span>
                   <div className="flex items-center gap-1">
                     <Button
                       variant="ghost"
                       size="icon"
                       onClick={() => {
                         setEditing(gl);
-                        setName(gl.name);
+                        setName(displayName(gl.name));
                         setDialogOpen(true);
                       }}
                       data-testid={`button-edit-grade-${gl.id}`}
@@ -150,8 +153,8 @@ export default function GradeLevelsPage() {
               <Label>Name</Label>
               <Input
                 value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Grade 1"
+                onChange={(e) => setName(displayName(e.target.value))}
+                placeholder="e.g. 1 or K"
                 required
                 data-testid="input-grade-level-name"
               />

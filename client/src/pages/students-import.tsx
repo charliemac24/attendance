@@ -80,7 +80,7 @@ export default function StudentsImportPage() {
   };
 
   const downloadTemplate = () => {
-    const csv = "Grade Level,First Name,Last Name,Student ID,Contact Number\nGrade 1,Juan,Dela Cruz,2025-001,09171234567\n";
+    const csv = "Grade Level,First Name,Last Name,Student ID,Contact Number\n1,Juan,Dela Cruz,2025-001,09171234567\n";
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");

@@ -10,7 +10,7 @@ import fs from "fs";
 import path from "path";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "./db";
-import { attendanceEvents, gradeLevels, schools, sections, smsLogs } from "@shared/schema";
+import { attendanceEvents, dailyAttendances, gradeLevels, schools, sections, smsLogs, students } from "@shared/schema";
 
 const MemoryStore = createMemoryStore(session);
 const upload = multer({ storage: multer.memoryStorage() });
@@ -128,10 +128,12 @@ function formatDateTimeInTimezone(date: Date, timezone?: string): string {
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
+    hourCycle: "h23",
   }).formatToParts(date);
 
   const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "00";
-  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+  const hour = get("hour") === "24" ? "00" : get("hour");
+  return `${get("year")}-${get("month")}-${get("day")} ${hour}:${get("minute")}:${get("second")}`;
 }
 
 function formatDatabaseDateTime(value: Date | string | null | undefined): string | null {
@@ -560,6 +562,14 @@ function isLateNowForSchool(now: Date, lateTime: string, timezone?: string): boo
   return hour > lateHour || (hour === lateHour && minute > lateMinute);
 }
 
+function isPastTimeForSchool(now: Date, targetTime: string, timezone?: string): boolean {
+  const targetTimeParts = targetTime.split(":");
+  const targetHour = parseInt(targetTimeParts[0] ?? "0", 10);
+  const targetMinute = parseInt(targetTimeParts[1] ?? "0", 10);
+  const { hour, minute } = getTimePartsInTimezone(now, timezone);
+  return hour > targetHour || (hour === targetHour && minute >= targetMinute);
+}
+
 function isLateStoredDateTimeForSchool(checkInTime: Date | string, lateTime: string): boolean {
   const normalized = formatDatabaseDateTime(checkInTime);
   if (!normalized) return false;
@@ -899,15 +909,34 @@ export async function registerRoutes(
   app.get("/api/dashboard", requireAuth, async (req, res) => {
     try {
       const schoolId = await getSchoolId(req);
-      if (!schoolId) return res.json({ date: "", kpis: { present: 0, late: 0, pendingCheckout: 0, absent: 0, notCheckedIn: 0, total: 0 }, recentEvents: [], sectionBreakdown: [] });
+      if (!schoolId) {
+        return res.json({
+          date: "",
+          kpis: { checkedOut: 0, lateArrivals: 0, onCampus: 0, absent: 0, notCheckedIn: 0, total: 0 },
+          recentEvents: [],
+          gradeBreakdown: [],
+        });
+      }
 
       const school = await storage.getSchool(schoolId);
       const date = (req.query.date as string) || getTodayIsoInTimezone(school?.timezone);
       const kpis = await storage.getDashboardKpis(schoolId, date);
       const recentEvents = await storage.getRecentEvents(schoolId, 10);
-      const sectionBreakdown = await storage.getSectionBreakdown(schoolId, date);
+      const gradeBreakdown = await storage.getGradeAttendanceBreakdown(schoolId, date);
 
-      res.json({ date, kpis, recentEvents, sectionBreakdown });
+      res.json({ date, kpis, recentEvents, gradeBreakdown });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/dashboard/recent-activity", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(400).json({ message: "No school context" });
+
+      const deleted = await storage.clearRecentEvents(schoolId);
+      res.json({ deleted });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -960,10 +989,10 @@ export async function registerRoutes(
           schoolId, date, search,
           gradeFilter && gradeFilter !== "all" ? Number(gradeFilter) : undefined,
           sectionFilter && sectionFilter !== "all" ? Number(sectionFilter) : undefined,
-          page, pageSize
+          page, pageSize,
+          sectionScope,
         );
-        const scopedRecords = filterRecordsToSectionScope(result.records, sectionScope);
-        return res.json({ records: scopedRecords, total: scopedRecords.length, page, pageSize });
+        return res.json({ records: result.records, total: result.total, page, pageSize });
       }
 
       let records: any[] = [];
@@ -1040,7 +1069,11 @@ export async function registerRoutes(
       if (!schoolId) return res.json([]);
       const sectionScope = await getSectionScopeForUser(req, schoolId);
       const search = req.query.search as string;
-      const results = filterRecordsToSectionScope(await storage.getStudents(schoolId, search), sectionScope);
+      const statusParam = req.query.status as string | undefined;
+      const status = statusParam === "active" || statusParam === "inactive" || statusParam === "all"
+        ? statusParam
+        : "all";
+      const results = filterRecordsToSectionScope(await storage.getStudents(schoolId, search, status), sectionScope);
       res.json(results);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -1052,14 +1085,28 @@ export async function registerRoutes(
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.status(400).json({ message: "No school context" });
 
+      let gradeLevelId = req.body.gradeLevelId || null;
+      const sectionId = req.body.sectionId || null;
+      if (sectionId) {
+        const schoolSections = await storage.getSections(schoolId);
+        const selectedSection = schoolSections.find((section) => section.id === Number(sectionId));
+        if (!selectedSection) {
+          return res.status(400).json({ message: "Selected section does not belong to this school" });
+        }
+        if (gradeLevelId && Number(gradeLevelId) !== Number(selectedSection.gradeLevelId)) {
+          return res.status(400).json({ message: "Selected section does not belong to the chosen grade level" });
+        }
+        gradeLevelId = selectedSection.gradeLevelId;
+      }
+
       const qrToken = randomBytes(16).toString("hex");
       const student = await storage.createStudent({
         ...req.body,
         schoolId,
         qrToken,
         isActive: req.body.isActive === false ? false : true,
-        gradeLevelId: req.body.gradeLevelId || null,
-        sectionId: req.body.sectionId || null,
+        gradeLevelId,
+        sectionId,
       });
       res.json(student);
     } catch (err: any) {
@@ -1103,9 +1150,33 @@ export async function registerRoutes(
 
   app.patch("/api/students/:id", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
     try {
+      const existingStudent = await storage.getStudent(Number(req.params.id));
+      if (!existingStudent) {
+        return res.status(404).json({ message: "Student not found" });
+      }
+
+      let gradeLevelId = req.body.gradeLevelId;
+      let sectionId = req.body.sectionId;
+      if (sectionId === "") sectionId = null;
+      if (gradeLevelId === "") gradeLevelId = null;
+
+      if (sectionId) {
+        const schoolSections = await storage.getSections(existingStudent.schoolId);
+        const selectedSection = schoolSections.find((section) => section.id === Number(sectionId));
+        if (!selectedSection) {
+          return res.status(400).json({ message: "Selected section does not belong to this school" });
+        }
+        if (gradeLevelId && Number(gradeLevelId) !== Number(selectedSection.gradeLevelId)) {
+          return res.status(400).json({ message: "Selected section does not belong to the chosen grade level" });
+        }
+        gradeLevelId = selectedSection.gradeLevelId;
+      }
+
       const payload = {
         ...req.body,
         isActive: typeof req.body.isActive === "boolean" ? req.body.isActive : undefined,
+        gradeLevelId,
+        sectionId,
       };
       const student = await storage.updateStudent(Number(req.params.id), payload);
       res.json(student);
@@ -1285,11 +1356,21 @@ export async function registerRoutes(
       if (!schoolId) return res.status(400).json({ message: "No school context" });
 
       const { rows } = req.body;
+      if (!Array.isArray(rows)) {
+        return res.status(400).json({ message: "Invalid import payload" });
+      }
+
+      const validRows = rows.filter((row: any) => row?.status === "ok");
+      if (validRows.length === 0) {
+        return res.status(400).json({ message: "No valid rows to import" });
+      }
+
       let imported = 0;
       let updated = 0;
+      const importedStudentNos = new Set<string>();
 
-      for (const row of rows) {
-        if (row.status !== "ok") continue;
+      for (const row of validRows) {
+        importedStudentNos.add(String(row.studentId));
 
         const gradeLevel = await storage.findOrCreateGradeLevel(schoolId, row.gradeLevel);
 
@@ -1298,6 +1379,7 @@ export async function registerRoutes(
           lastName: row.lastName,
           guardianPhone: row.normalizedPhone,
           gradeLevelId: gradeLevel.id,
+          isActive: true,
         });
 
         if (result.wasUpdate) {
@@ -1307,7 +1389,12 @@ export async function registerRoutes(
         }
       }
 
-      res.json({ imported, updated, total: imported + updated });
+      const deactivated = await storage.deactivateStudentsMissingFromRoster(
+        schoolId,
+        Array.from(importedStudentNos),
+      );
+
+      res.json({ imported, updated, deactivated, total: imported + updated });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -1743,15 +1830,28 @@ export async function registerRoutes(
   });
 
   // Manual absent / excused
-  app.post("/api/attendance/status", requireAuth, requireRole("super_admin", "school_admin", "gate_staff"), async (req, res) => {
+  app.post("/api/attendance/status", requireAuth, requireRole("super_admin", "school_admin", "gate_staff", "teacher"), async (req, res) => {
     try {
       const { studentId, status, date, note } = req.body;
       if (!studentId || !["absent", "excused"].includes(status)) {
         return res.status(400).json({ message: "Invalid payload" });
       }
 
+      const currentUser = req.session.userId ? await storage.getUserById(req.session.userId) : null;
+      if (!currentUser) return res.status(401).json({ message: "Unauthorized" });
+      if (currentUser.role === "teacher" && status !== "absent") {
+        return res.status(403).json({ message: "Teachers can only mark students absent" });
+      }
+
       const student = await storage.getStudent(Number(studentId));
       if (!student) return res.status(404).json({ message: "Student not found" });
+
+      if (currentUser.role === "teacher") {
+        const teacherSections = await storage.getTeacherSectionIds(currentUser.id);
+        if (!student.sectionId || !teacherSections.includes(student.sectionId)) {
+          return res.status(403).json({ message: "You can only update students in your assigned sections" });
+        }
+      }
 
       const school = await storage.getSchool(student.schoolId);
       if (!school) return res.status(404).json({ message: "School not found" });
@@ -1842,6 +1942,155 @@ export async function registerRoutes(
       };
       const school = await storage.updateSchool(schoolId, payload);
       res.json(school);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/cron/mark-absent", async (req, res) => {
+    try {
+      const cronSecret = String(process.env.CRON_SECRET || "").trim();
+      const providedSecret = String(
+        req.header("x-cron-secret")
+        || req.header("authorization")?.replace(/^Bearer\s+/i, "")
+        || req.query.secret
+        || req.body?.secret
+        || "",
+      ).trim();
+
+      if (!cronSecret) {
+        return res.status(500).json({ message: "CRON_SECRET is not configured" });
+      }
+
+      if (!providedSecret || providedSecret !== cronSecret) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+
+      const dateOverride = String(req.body?.date || req.query.date || "").trim();
+      if (dateOverride && !/^\d{4}-\d{2}-\d{2}$/.test(dateOverride)) {
+        return res.status(400).json({ message: "Invalid date. Use YYYY-MM-DD." });
+      }
+
+      const now = new Date();
+      const schools = await storage.getSchools();
+      const results: Array<{
+        schoolId: number;
+        schoolName: string;
+        date: string;
+        cutoffTime: string;
+        markedAbsent: number;
+        skipped: boolean;
+        reason?: string;
+      }> = [];
+
+      for (const school of schools) {
+        const targetDate = dateOverride || getTodayIsoInTimezone(school.timezone);
+        const isHoliday = await storage.isHoliday(school.id, targetDate);
+        if (isHoliday) {
+          results.push({
+            schoolId: school.id,
+            schoolName: school.name,
+            date: targetDate,
+            cutoffTime: school.cutoffTime,
+            markedAbsent: 0,
+            skipped: true,
+            reason: "holiday",
+          });
+          continue;
+        }
+
+        if (!dateOverride && !isPastTimeForSchool(now, school.cutoffTime, school.timezone)) {
+          results.push({
+            schoolId: school.id,
+            schoolName: school.name,
+            date: targetDate,
+            cutoffTime: school.cutoffTime,
+            markedAbsent: 0,
+            skipped: true,
+            reason: "before_cutoff",
+          });
+          continue;
+        }
+
+        const unattendedStudents = await db
+          .select({
+            id: students.id,
+            schoolId: students.schoolId,
+            firstName: students.firstName,
+            lastName: students.lastName,
+            guardianPhone: students.guardianPhone,
+          })
+          .from(students)
+          .where(
+            and(
+              eq(students.schoolId, school.id),
+              eq(students.isActive, true),
+              sql`${students.id} NOT IN (
+                ${db
+                  .select({ studentId: dailyAttendances.studentId })
+                  .from(dailyAttendances)
+                  .where(
+                    and(
+                      eq(dailyAttendances.schoolId, school.id),
+                      eq(dailyAttendances.date, targetDate),
+                    ),
+                  )}
+              )`,
+            ),
+          );
+
+        let markedAbsent = 0;
+        const nowLocal = formatDateTimeInTimezone(now, school.timezone);
+
+        for (const student of unattendedStudents) {
+          const attendance = await storage.createDailyAttendance({
+            schoolId: school.id,
+            studentId: student.id,
+            date: targetDate,
+            status: "absent",
+            checkInTime: null,
+            checkOutTime: null,
+            isLate: false,
+            markedAbsentAt: mysqlDateTime(nowLocal) as any,
+          });
+
+          await storage.createAttendanceEvent({
+            schoolId: school.id,
+            studentId: student.id,
+            dailyAttendanceId: attendance.id,
+            eventType: "auto_absent_cutoff",
+            occurredAt: mysqlDateTime(nowLocal) as any,
+            performedByUserId: null,
+            kioskLocationId: null,
+            meta: { source: "cron", cutoffTime: school.cutoffTime },
+          });
+
+          await maybeSendAttendanceSms({
+            school,
+            student,
+            templateType: "absent",
+            eventTime: now,
+            status: "absent",
+          });
+
+          markedAbsent++;
+        }
+
+        results.push({
+          schoolId: school.id,
+          schoolName: school.name,
+          date: targetDate,
+          cutoffTime: school.cutoffTime,
+          markedAbsent,
+          skipped: false,
+        });
+      }
+
+      res.json({
+        success: true,
+        processedAt: now.toISOString(),
+        results,
+      });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }

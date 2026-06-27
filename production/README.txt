@@ -2,7 +2,6 @@ Production upload contents for MYO Attendance
 
 Included:
 - dist/
-- public/
 - uploads/
 - migrations/
 - package.json
@@ -10,7 +9,7 @@ Included:
 - .htaccess
 
 Notes:
-- This folder contains the current built application files.
-- Database was not exported here. The live database remains as-is.
-- If the server needs environment variables, use the server's existing production values.
+- This folder was refreshed from the current workspace source and build output.
+- Database contents were not exported here.
+- Use the production server's existing environment variables.
 - Start command: npm start

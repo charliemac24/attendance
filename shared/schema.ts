@@ -29,6 +29,9 @@ export const schools = mysqlTable("schools", {
   minScanIntervalSeconds: int("min_scan_interval_seconds").notNull().default(120),
   dismissalTime: time("dismissal_time").notNull().default("15:00:00"),
   earlyOutWindowMinutes: int("early_out_window_minutes").notNull().default(30),
+  showStudentsNeedingAttention: boolean("show_students_needing_attention")
+    .notNull()
+    .default(true),
   absentSmsEnabled: boolean("absent_sms_enabled").notNull().default(false),
   smsProvider: varchar("sms_provider", { length: 32 }).notNull().default("semaphore"),
   semaphoreApiKey: varchar("semaphore_api_key", { length: 255 }),

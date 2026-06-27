@@ -4,17 +4,9 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "dev": "cross-env NODE_ENV=development tsx server/index.ts",
-    "build": "tsx script/build.ts",
-    "start": "cross-env NODE_ENV=production node dist/index.cjs",
-    "check": "tsc",
-    "db:push": "drizzle-kit push",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "docker:watch": "chokidar \"client/src/**\" \"server/**\" \"shared/**\" \"migrations/**\" \"package.json\" \"package-lock.json\" \"Dockerfile\" \"docker-compose.yml\" --ignore \"**/node_modules/**\" --ignore \"**/dist/**\" --ignore \"release/**\" --ignore \"uploads/**\" -c \"docker compose up -d --build app\""
+    "start": "NODE_ENV=production node dist/index.cjs"
   },
   "dependencies": {
-    "@esbuild/linux-x64": "^0.27.3",
     "@hookform/resolvers": "^3.10.0",
     "@jridgewell/trace-mapping": "^0.3.25",
     "@radix-ui/react-accordion": "^1.2.4",
@@ -86,37 +78,5 @@
     "ws": "^8.18.0",
     "zod": "^3.24.2",
     "zod-validation-error": "^3.4.0"
-  },
-  "devDependencies": {
-    "@replit/vite-plugin-cartographer": "^0.4.4",
-    "@replit/vite-plugin-dev-banner": "^0.1.1",
-    "@replit/vite-plugin-runtime-error-modal": "^0.0.3",
-    "@tailwindcss/typography": "^0.5.15",
-    "@tailwindcss/vite": "^4.1.18",
-    "@types/express": "^5.0.0",
-    "@types/express-session": "^1.18.0",
-    "@types/node": "20.19.27",
-    "@types/passport": "^1.0.16",
-    "@types/passport-local": "^1.0.38",
-    "@types/qrcode": "^1.5.6",
-    "@types/react": "^18.3.11",
-    "@types/react-dom": "^18.3.1",
-    "@types/ws": "^8.5.13",
-    "@vitejs/plugin-react": "^4.7.0",
-    "autoprefixer": "^10.4.20",
-    "chokidar-cli": "^3.0.0",
-    "cross-env": "^10.1.0",
-    "drizzle-kit": "^0.31.9",
-    "esbuild": "^0.25.0",
-    "postcss": "^8.4.47",
-    "tailwindcss": "^3.4.17",
-    "tsx": "^4.20.5",
-    "typescript": "5.6.3",
-    "vite": "^7.3.0"
-  },
-  "overrides": {
-    "drizzle-kit": {
-      "@esbuild-kit/esm-loader": "npm:tsx@^4.20.4"
-    }
   }
 }

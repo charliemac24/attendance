@@ -12,6 +12,7 @@ import LoginPage from "@/pages/login";
 import DashboardPage from "@/pages/dashboard";
 import TodayStatusPage from "@/pages/today-status";
 import StudentsPage from "@/pages/students";
+import InactiveStudentsPage from "@/pages/students-inactive";
 import StudentsPromotionPage from "@/pages/students-promotion";
 import StudentsImportPage from "@/pages/students-import";
 import GradeLevelsPage from "@/pages/grade-levels";
@@ -77,6 +78,7 @@ function AuthenticatedLayout() {
               <Route path="/" component={DashboardPage} />
               <Route path="/today/:status" component={TodayStatusPage} />
               <Route path="/students/import" component={StudentsImportPage} />
+              <Route path="/students/inactive" component={InactiveStudentsPage} />
               <Route path="/students/promotion" component={StudentsPromotionPage} />
               <Route path="/students" component={StudentsPage} />
               <Route path="/grade-levels" component={GradeLevelsPage} />

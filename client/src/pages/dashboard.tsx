@@ -1,18 +1,26 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
+import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { getGradeLevelSortRank, normalizeGradeLevelName } from "@shared/grade-levels";
 import {
   UserCheck,
-  Clock,
-  ArrowRight,
+  UserX,
+  HelpCircle,
   Calendar,
+  Trash2,
 } from "lucide-react";
 import { localIsoDate } from "@/lib/utils";
+import type { School } from "@shared/schema";
+import { Bar, BarChart, CartesianGrid, Cell, LabelList, XAxis, YAxis } from "recharts";
 
 interface DashboardData {
   date: string;
@@ -30,14 +38,16 @@ interface DashboardData {
     eventType: string;
     occurredAt: string;
   }>;
-  sectionBreakdown: Array<{
-    section: string;
+  gradeBreakdown: Array<{
     gradeLevel: string;
+    totalStudents: number;
+    checkedIn: number;
     checkedOut: number;
+    attendanceRate: number;
     lateArrivals: number;
     absent: number;
     onCampus: number;
-    total: number;
+    notCheckedIn: number;
   }>;
 }
 
@@ -57,6 +67,8 @@ interface AttendanceIntelligenceData {
 }
 
 export default function DashboardPage() {
+  const { toast } = useToast();
+  const { user } = useAuth();
   const [selectedDate, setSelectedDate] = useState(
     localIsoDate()
   );
@@ -66,10 +78,15 @@ export default function DashboardPage() {
     refetchInterval: 15000,
     refetchOnWindowFocus: true,
   });
+  const { data: school } = useQuery<School>({
+    queryKey: ["/api/settings/school"],
+    refetchOnWindowFocus: true,
+  });
   const { data: intelligence, isLoading: isIntelligenceLoading } = useQuery<AttendanceIntelligenceData>({
     queryKey: [`/api/attendance-intelligence?date=${selectedDate}`],
     refetchInterval: 15000,
     refetchOnWindowFocus: true,
+    enabled: (school?.showStudentsNeedingAttention ?? true),
   });
 
   const riskFlagLabel: Record<string, string> = {
@@ -126,30 +143,51 @@ export default function DashboardPage() {
     return "bg-slate-100 text-slate-700 border-slate-200";
   };
 
+  const presentToday = (data?.kpis.checkedOut ?? 0) + (data?.kpis.onCampus ?? 0);
+  const gradeBreakdown = [...(data?.gradeBreakdown || [])].sort(
+    (a, b) => getGradeLevelSortRank(a.gradeLevel) - getGradeLevelSortRank(b.gradeLevel),
+  );
+  const clearRecentActivityMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("DELETE", "/api/dashboard/recent-activity");
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: [`/api/dashboard?date=${selectedDate}`] });
+      toast({ title: "Recent activity cleared" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Clear failed", description: err.message, variant: "destructive" });
+    },
+  });
   const kpiCards = [
     {
-      label: "Checked Out",
-      value: data?.kpis.checkedOut ?? 0,
+      label: "Present Today",
+      value: presentToday,
       icon: UserCheck,
       color: "text-green-600 dark:text-green-400",
       bgColor: "bg-green-50 dark:bg-green-950/30",
-      href: `/today/present?date=${selectedDate}`,
+      description: "Students who checked in today",
+      breakdown: [
+        { label: "Late Arrivals", value: data?.kpis.lateArrivals ?? 0, href: `/today/late?date=${selectedDate}` },
+        { label: "Checked Out", value: data?.kpis.checkedOut ?? 0, href: `/today/present?date=${selectedDate}` },
+        { label: "Still In School", value: data?.kpis.onCampus ?? 0, href: `/today/pending-checkout?date=${selectedDate}` },
+      ],
     },
     {
-      label: "Late Arrivals",
-      value: data?.kpis.lateArrivals ?? 0,
-      icon: Clock,
-      color: "text-amber-600 dark:text-amber-400",
-      bgColor: "bg-amber-50 dark:bg-amber-950/30",
-      href: `/today/late?date=${selectedDate}`,
+      label: "Absent",
+      value: data?.kpis.absent ?? 0,
+      icon: UserX,
+      color: "text-red-600 dark:text-red-400",
+      bgColor: "bg-red-50 dark:bg-red-950/30",
+      description: "Students marked absent today",
     },
     {
-      label: "On Campus",
-      value: data?.kpis.onCampus ?? 0,
-      icon: ArrowRight,
-      color: "text-blue-600 dark:text-blue-400",
-      bgColor: "bg-blue-50 dark:bg-blue-950/30",
-      href: `/today/pending-checkout?date=${selectedDate}`,
+      label: "Not Yet Checked In",
+      value: data?.kpis.notCheckedIn ?? 0,
+      icon: HelpCircle,
+      color: "text-slate-600 dark:text-slate-300",
+      bgColor: "bg-slate-100 dark:bg-slate-800/60",
+      description: "Active students with no attendance record yet",
     },
   ];
 
@@ -158,6 +196,15 @@ export default function DashboardPage() {
     const d = new Date();
     d.setDate(d.getDate() - 1);
     setSelectedDate(d.toLocaleDateString("en-CA", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }));
+  };
+
+  const handleClearRecentActivity = () => {
+    if (!window.confirm("Clear all recent activity entries for this school?")) return;
+    clearRecentActivityMutation.mutate();
+  };
+
+  const chartConfig = {
+    attendanceRate: { label: "Attendance %", color: "hsl(201 96% 32%)" },
   };
 
   return (
@@ -196,30 +243,54 @@ export default function DashboardPage() {
           ? Array.from({ length: 3 }).map((_, i) => (
               <Card key={i}>
                 <CardContent className="p-4">
-                  <Skeleton className="h-12 w-full" />
+                  <Skeleton className="h-24 w-full" />
                 </CardContent>
               </Card>
             ))
           : kpiCards.map((kpi) => (
-              <Link key={kpi.label} href={kpi.href}>
-                <Card className="hover-elevate cursor-pointer" data-testid={`card-kpi-${kpi.label.toLowerCase().replace(/\s+/g, "-")}`}>
-                  <CardContent className="p-4">
-                    <div className="flex items-center gap-3">
-                      <div className={`p-2 rounded-md ${kpi.bgColor}`}>
-                        <kpi.icon className={`h-5 w-5 ${kpi.color}`} />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-xs text-muted-foreground truncate">
-                          {kpi.label}
-                        </p>
-                        <p className="text-2xl font-bold">{kpi.value}</p>
-                      </div>
+              <Card key={kpi.label} data-testid={`card-kpi-${kpi.label.toLowerCase().replace(/\s+/g, "-")}`}>
+                <CardContent className="p-4 space-y-4">
+                  <div className="flex items-start gap-3">
+                    <div className={`p-2 rounded-md ${kpi.bgColor}`}>
+                      <kpi.icon className={`h-5 w-5 ${kpi.color}`} />
                     </div>
-                  </CardContent>
-                </Card>
-              </Link>
+                    <div className="min-w-0">
+                      <p className="text-xs text-muted-foreground truncate">
+                        {kpi.label}
+                      </p>
+                      <p className="text-2xl font-bold">{kpi.value}</p>
+                      {"description" in kpi && kpi.description ? (
+                        <p className="text-xs text-muted-foreground mt-1">{kpi.description}</p>
+                      ) : null}
+                    </div>
+                  </div>
+                  {"breakdown" in kpi && kpi.breakdown ? (
+                    <div className="grid grid-cols-3 gap-2 border-t pt-3">
+                      {kpi.breakdown.map((item) => (
+                        <Link key={item.label} href={item.href}>
+                          <a
+                            className="block rounded-lg bg-muted/40 px-3 py-2 transition-colors hover:bg-muted/70"
+                            data-testid={`link-kpi-breakdown-${item.label.toLowerCase().replace(/\s+/g, "-")}`}
+                          >
+                            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                              {item.label}
+                            </p>
+                            <p className="text-lg font-semibold">{item.value}</p>
+                          </a>
+                        </Link>
+                      ))}
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
             ))}
       </div>
+
+      {!isLoading && (
+        <p className="text-sm text-muted-foreground">
+          Late arrivals are already included in <span className="font-medium text-foreground">Present Today</span>.
+        </p>
+      )}
 
       {data?.kpis.total !== undefined && (
         <div className="flex items-baseline gap-2 text-lg">
@@ -228,116 +299,180 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
-          <div>
-            <h3 className="text-sm font-semibold">Students Needing Attention</h3>
-            <p className="text-xs text-muted-foreground mt-1">
-              Students appear here for attendance risk flags or a declining recent trend.
-            </p>
-          </div>
-          <Badge variant="secondary" className="no-default-hover-elevate no-default-active-elevate">
-            {intelligence?.summary.atRiskCount ?? 0}
-          </Badge>
-        </CardHeader>
-        <CardContent>
-          {isIntelligenceLoading ? (
-            <Skeleton className="h-40 w-full" />
-          ) : intelligence?.atRiskStudents && intelligence.atRiskStudents.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-muted-foreground">
-                    <th className="text-left py-2 pr-3 font-medium">Student</th>
-                    <th className="text-left py-2 pr-3 font-medium">Class</th>
-                    <th className="text-left py-2 pr-3 font-medium">Attention</th>
-                    <th className="text-left py-2 pr-3 font-medium">Reason</th>
-                    <th className="text-left py-2 pr-3 font-medium">Score</th>
-                    <th className="text-left py-2 font-medium">Trend</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {intelligence.atRiskStudents.slice(0, 9).map((s) => {
-                    const attentionBadge = getAttentionBadge(s);
-                    return (
-                      <tr key={s.studentId} className="border-b last:border-0 align-top">
-                        <td className="py-3 pr-3">
-                          <p className="font-semibold text-foreground">{s.studentName}</p>
-                          <p className="text-xs text-muted-foreground">{s.studentNo}</p>
-                        </td>
-                        <td className="py-3 pr-3 text-muted-foreground">
-                          {s.gradeLevel} / {s.section}
-                        </td>
-                        <td className="py-3 pr-3">
-                          <Badge className={`border text-[10px] font-semibold ${attentionBadge.className}`}>
-                            {attentionBadge.label}
-                          </Badge>
-                        </td>
-                        <td className="py-3 pr-3">
-                          <p className="font-medium text-foreground">{getPrimaryAttentionReason(s)}</p>
-                          <p className="text-xs text-muted-foreground mt-1 max-w-xs">
-                            {s.riskFlags.length > 0
-                              ? s.riskFlags.slice(0, 3).map((flag) => riskFlagLabel[flag] || flag).join(", ")
-                              : getAttentionExplanation(s)}
-                          </p>
-                        </td>
-                        <td className="py-3 pr-3">
-                          <span className="inline-flex rounded-md border bg-muted/30 px-2.5 py-1.5 font-semibold">
-                            {s.score}
-                          </span>
-                        </td>
-                        <td className="py-3">
-                          <Badge className={`border text-[10px] capitalize ${getTrendBadgeClass(s.trend)}`}>
-                            {s.trend}
-                          </Badge>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="text-muted-foreground text-sm py-4 text-center">No students needing attention in the selected window</p>
-          )}
-        </CardContent>
-      </Card>
-
-      <div className="grid lg:grid-cols-2 gap-6">
+      {(school?.showStudentsNeedingAttention ?? true) && (
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
-            <h3 className="text-sm font-semibold">Section Breakdown</h3>
+            <div>
+              <h3 className="text-sm font-semibold">Students Needing Attention</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Students appear here for attendance risk flags or a declining recent trend.
+              </p>
+            </div>
+            <Badge variant="secondary" className="no-default-hover-elevate no-default-active-elevate">
+              {intelligence?.summary.atRiskCount ?? 0}
+            </Badge>
           </CardHeader>
           <CardContent>
-            {isLoading ? (
+            {isIntelligenceLoading ? (
               <Skeleton className="h-40 w-full" />
-            ) : data?.sectionBreakdown && data.sectionBreakdown.length > 0 ? (
+            ) : intelligence?.atRiskStudents && intelligence.atRiskStudents.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b text-muted-foreground">
-                      <th className="text-left py-2 pr-2 font-medium">Section</th>
-                      <th className="text-center py-2 px-1 font-medium">CO</th>
-                      <th className="text-center py-2 px-1 font-medium">LA</th>
-                      <th className="text-center py-2 px-1 font-medium">A</th>
-                      <th className="text-center py-2 px-1 font-medium">OC</th>
+                      <th className="text-left py-2 pr-3 font-medium">Student</th>
+                      <th className="text-left py-2 pr-3 font-medium">Class</th>
+                      <th className="text-left py-2 pr-3 font-medium">Attention</th>
+                      <th className="text-left py-2 pr-3 font-medium">Reason</th>
+                      <th className="text-left py-2 pr-3 font-medium">Score</th>
+                      <th className="text-left py-2 font-medium">Trend</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.sectionBreakdown.map((row, i) => (
-                      <tr key={i} className="border-b last:border-0">
-                        <td className="py-2 pr-2">
-                          <span className="font-medium">{row.section}</span>
-                          <span className="text-muted-foreground text-xs ml-1">({row.gradeLevel})</span>
-                        </td>
-                        <td className="text-center py-2 px-1 text-green-600 dark:text-green-400">{row.checkedOut}</td>
-                        <td className="text-center py-2 px-1 text-amber-600 dark:text-amber-400">{row.lateArrivals}</td>
-                        <td className="text-center py-2 px-1 text-red-600 dark:text-red-400">{row.absent}</td>
-                        <td className="text-center py-2 px-1 text-blue-600 dark:text-blue-400">{row.onCampus}</td>
-                      </tr>
-                    ))}
+                    {intelligence.atRiskStudents.slice(0, 9).map((s) => {
+                      const attentionBadge = getAttentionBadge(s);
+                      return (
+                        <tr key={s.studentId} className="border-b last:border-0 align-top">
+                          <td className="py-3 pr-3">
+                            <p className="font-semibold text-foreground">{s.studentName}</p>
+                            <p className="text-xs text-muted-foreground">{s.studentNo}</p>
+                          </td>
+                          <td className="py-3 pr-3 text-muted-foreground">
+                            {s.gradeLevel} / {s.section}
+                          </td>
+                          <td className="py-3 pr-3">
+                            <Badge className={`border text-[10px] font-semibold ${attentionBadge.className}`}>
+                              {attentionBadge.label}
+                            </Badge>
+                          </td>
+                          <td className="py-3 pr-3">
+                            <p className="font-medium text-foreground">{getPrimaryAttentionReason(s)}</p>
+                            <p className="text-xs text-muted-foreground mt-1 max-w-xs">
+                              {s.riskFlags.length > 0
+                                ? s.riskFlags.slice(0, 3).map((flag) => riskFlagLabel[flag] || flag).join(", ")
+                                : getAttentionExplanation(s)}
+                            </p>
+                          </td>
+                          <td className="py-3 pr-3">
+                            <span className="inline-flex rounded-md border bg-muted/30 px-2.5 py-1.5 font-semibold">
+                              {s.score}
+                            </span>
+                          </td>
+                          <td className="py-3">
+                            <Badge className={`border text-[10px] capitalize ${getTrendBadgeClass(s.trend)}`}>
+                              {s.trend}
+                            </Badge>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
+              </div>
+            ) : (
+              <p className="text-muted-foreground text-sm py-4 text-center">No students needing attention in the selected window</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid lg:grid-cols-2 gap-6">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
+            <div>
+              <h3 className="text-sm font-semibold">Attendance By Grade</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Percentage of active students with attendance for the selected date.
+              </p>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <Skeleton className="h-40 w-full" />
+            ) : gradeBreakdown.length > 0 ? (
+              <div className="space-y-5">
+                <ChartContainer config={chartConfig} className="h-[260px] w-full">
+                  <BarChart data={gradeBreakdown} margin={{ top: 16, right: 8, left: -16, bottom: 0 }}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis
+                      dataKey="gradeLevel"
+                      tickLine={false}
+                      axisLine={false}
+                      tickMargin={8}
+                      tickFormatter={(value) => normalizeGradeLevelName(String(value))}
+                    />
+                    <YAxis
+                      tickLine={false}
+                      axisLine={false}
+                      tickMargin={8}
+                      width={36}
+                      domain={[0, 100]}
+                      tickFormatter={(value) => `${value}%`}
+                    />
+                    <ChartTooltip
+                      cursor={false}
+                      content={
+                        <ChartTooltipContent
+                          hideIndicator
+                          formatter={(_value, _name, item) => {
+                            const row = item.payload as DashboardData["gradeBreakdown"][number];
+                            return (
+                              <div className="space-y-1">
+                                <div className="font-medium">{row.gradeLevel}</div>
+                                <div>{row.attendanceRate}% attendance</div>
+                                <div className="text-muted-foreground">Present: {row.checkedIn} / {row.totalStudents}</div>
+                                <div className="text-muted-foreground">Absent: {row.absent}</div>
+                                <div className="text-muted-foreground">Not checked in: {row.notCheckedIn}</div>
+                              </div>
+                            );
+                          }}
+                        />
+                      }
+                    />
+                    <Bar dataKey="attendanceRate" radius={[6, 6, 0, 0]}>
+                      {gradeBreakdown.map((row) => (
+                        <Cell
+                          key={row.gradeLevel}
+                          fill={
+                            row.attendanceRate >= 90
+                              ? "#15803d"
+                              : row.attendanceRate >= 75
+                                ? "#0f766e"
+                                : row.attendanceRate >= 50
+                                  ? "#d97706"
+                                  : "#b91c1c"
+                          }
+                        />
+                      ))}
+                      <LabelList dataKey="attendanceRate" position="top" formatter={(value: number) => `${value}%`} />
+                    </Bar>
+                  </BarChart>
+                </ChartContainer>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-muted-foreground">
+                        <th className="text-left py-2 pr-3 font-medium">Grade</th>
+                        <th className="text-right py-2 px-2 font-medium">Attendance</th>
+                        <th className="text-right py-2 px-2 font-medium">Present</th>
+                        <th className="text-right py-2 px-2 font-medium">Absent</th>
+                        <th className="text-right py-2 px-2 font-medium">Not In</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {gradeBreakdown.map((row) => (
+                        <tr key={row.gradeLevel} className="border-b last:border-0">
+                          <td className="py-2 pr-3 font-medium">{row.gradeLevel}</td>
+                          <td className="py-2 px-2 text-right">{row.attendanceRate}%</td>
+                          <td className="py-2 px-2 text-right text-green-700">{row.checkedIn}</td>
+                          <td className="py-2 px-2 text-right text-red-700">{row.absent}</td>
+                          <td className="py-2 px-2 text-right text-slate-600">{row.notCheckedIn}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             ) : (
               <p className="text-muted-foreground text-sm py-4 text-center">No data for this date</p>
@@ -348,6 +483,18 @@ export default function DashboardPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
             <h3 className="text-sm font-semibold">Recent Activity</h3>
+            {(user?.role === "super_admin" || user?.role === "school_admin") && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleClearRecentActivity}
+                disabled={clearRecentActivityMutation.isPending || !data?.recentEvents?.length}
+                data-testid="button-clear-recent-activity"
+              >
+                <Trash2 className="h-4 w-4 mr-1" />
+                {clearRecentActivityMutation.isPending ? "Clearing..." : "Clear"}
+              </Button>
+            )}
           </CardHeader>
           <CardContent>
             {isLoading ? (

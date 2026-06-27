@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
 import { ArrowUpCircle, ArrowUpDown, GraduationCap, Search } from "lucide-react";
 import type { GradeLevel, Section, Student } from "@shared/schema";
 
@@ -63,6 +64,7 @@ function getDefaultAction(student: StudentWithRelations, orderedGradeLevels: Gra
 }
 
 export default function StudentsPromotionPage() {
+  const { user } = useAuth();
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [sourceGradeId, setSourceGradeId] = useState("all");
@@ -70,6 +72,21 @@ export default function StudentsPromotionPage() {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [drafts, setDrafts] = useState<Record<number, PromotionDraft>>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
+
+  if (user?.role !== "super_admin" && user?.role !== "school_admin") {
+    return (
+      <div className="p-6 max-w-4xl mx-auto">
+        <Card>
+          <CardContent className="p-6 space-y-2">
+            <h1 className="text-xl font-bold">Promotion access restricted</h1>
+            <p className="text-sm text-muted-foreground">
+              Only Super Admin and School Admin can bulk promote students.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   const { data: students, isLoading: studentsLoading } = useQuery<StudentWithRelations[]>({
     queryKey: [`/api/students?search=${search}`],

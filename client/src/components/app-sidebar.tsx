@@ -68,6 +68,7 @@ export function AppSidebar() {
 
   const managementItems = [
     { title: "Students", url: "/students", icon: Users },
+    { title: "Inactive Students", url: "/students/inactive", icon: UserX },
     { title: "Promotion", url: "/students/promotion", icon: ArrowUpCircle },
     { title: "Import Students", url: "/students/import", icon: Upload },
     { title: "Grade Levels", url: "/grade-levels", icon: GraduationCap },
@@ -101,6 +102,7 @@ export function AppSidebar() {
 
   const isActive = (url: string) => {
     if (url === "/") return location === "/";
+    if (url === "/students") return location === "/students";
     return location.startsWith(url);
   };
 

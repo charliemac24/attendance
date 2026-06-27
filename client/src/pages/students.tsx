@@ -18,6 +18,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { localIsoDate } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { Plus, Search, Edit, Users, Trash2, Printer, X, UserX, CheckCircle2, ArrowUpCircle, Layers } from "lucide-react";
+import { getGradeLevelSortRank, normalizeGradeLevelName } from "@shared/grade-levels";
 import QRCode from "qrcode";
 import type { Student, GradeLevel, Section } from "@shared/schema";
 
@@ -33,6 +34,28 @@ type PrintableStudent = {
   qrToken: string;
 };
 
+type StudentsPageProps = {
+  roster?: "active" | "inactive";
+};
+
+function formatGradeLevel(value?: string | null): string {
+  const normalized = normalizeGradeLevelName(value);
+  return normalized || "—";
+}
+
+function compareStudentsByRosterOrder(a: StudentWithRelations, b: StudentWithRelations): number {
+  const gradeDiff = getGradeLevelSortRank(a.gradeLevelName) - getGradeLevelSortRank(b.gradeLevelName);
+  if (gradeDiff !== 0) return gradeDiff;
+
+  const lastNameDiff = a.lastName.localeCompare(b.lastName);
+  if (lastNameDiff !== 0) return lastNameDiff;
+
+  const firstNameDiff = a.firstName.localeCompare(b.firstName);
+  if (firstNameDiff !== 0) return firstNameDiff;
+
+  return a.studentNo.localeCompare(b.studentNo);
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -40,6 +63,10 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+export default function ActiveStudentsPage() {
+  return <StudentsPage roster="active" />;
 }
 
 async function toPrintableItems(students: PrintableStudent[]) {
@@ -82,17 +109,33 @@ function renderPrintWindow(
   title: string,
   items: Array<{ fullName: string; studentNo: string; qrDataUrl: string }>,
 ) {
-  const cards = items
-    .map(
-      (item) => `
-    <div class="card">
-      <img src="${item.qrDataUrl}" alt="QR code for ${escapeHtml(item.fullName)}" />
-      <div class="name">${escapeHtml(item.fullName)}</div>
-      <div class="id">ID: ${escapeHtml(item.studentNo)}</div>
-    </div>
-  `,
-    )
-    .join("");
+  const pageSize = 9;
+  const pages: string[] = [];
+
+  for (let i = 0; i < items.length; i += pageSize) {
+    const cards = items
+      .slice(i, i + pageSize)
+      .map(
+        (item) => `
+      <div class="card">
+        <img src="${item.qrDataUrl}" alt="QR code for ${escapeHtml(item.fullName)}" />
+        <div class="name">${escapeHtml(item.fullName)}</div>
+        <div class="id">ID: ${escapeHtml(item.studentNo)}</div>
+      </div>
+    `,
+      )
+      .join("");
+
+    pages.push(`
+      <section class="print-page">
+        <div class="header">
+          <p class="title">${escapeHtml(title)}</p>
+          <p class="subtitle">Generated ${new Date().toLocaleString()}</p>
+        </div>
+        <div class="grid">${cards}</div>
+      </section>
+    `);
+  }
 
   printWindow.document.write(`
     <!doctype html>
@@ -103,35 +146,55 @@ function renderPrintWindow(
         <style>
           @page { size: A4; margin: 8mm; }
           body { font-family: Arial, sans-serif; margin: 0; color: #111; }
-          .header { margin: 0 0 8px; padding: 0 4mm; }
+          .print-page {
+            width: 100%;
+            min-height: calc(297mm - 16mm);
+            page-break-after: always;
+            break-after: page;
+            box-sizing: border-box;
+            padding: 0;
+          }
+          .print-page:last-child {
+            page-break-after: auto;
+            break-after: auto;
+          }
+          .header { margin: 0 0 5mm; padding: 0 2mm; }
           .title { font-size: 16px; font-weight: 700; margin: 0; }
           .subtitle { font-size: 11px; color: #555; margin: 3px 0 0; }
           .grid {
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 8mm;
-            padding: 0 4mm 8mm;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-rows: repeat(3, 1fr);
+            gap: 5mm;
+            padding: 0 3mm;
+            height: calc(297mm - 16mm - 16mm);
+            box-sizing: border-box;
           }
           .card {
             border: 1px solid #ddd;
             border-radius: 8px;
-            padding: 6mm 4mm;
+            padding: 4mm 3mm;
             text-align: center;
-            break-inside: avoid;
-            page-break-inside: avoid;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
             box-sizing: border-box;
+            overflow: hidden;
           }
-          .card img { width: 48mm; height: 48mm; display: block; margin: 0 auto 6mm; }
-          .name { font-size: 12px; font-weight: 600; margin-bottom: 3px; }
-          .id { font-size: 11px; color: #444; }
+          .card img { width: 42mm; height: 42mm; display: block; margin: 0 auto 4mm; flex: 0 0 auto; }
+          .name {
+            font-size: 11px;
+            font-weight: 600;
+            line-height: 1.2;
+            margin-bottom: 2px;
+            word-break: break-word;
+          }
+          .id { font-size: 10px; color: #444; line-height: 1.2; }
         </style>
       </head>
       <body>
-        <div class="header">
-          <p class="title">${escapeHtml(title)}</p>
-          <p class="subtitle">Generated ${new Date().toLocaleString()}</p>
-        </div>
-        <div class="grid">${cards}</div>
+        ${pages.join("")}
       </body>
     </html>
   `);
@@ -142,9 +205,11 @@ function renderPrintWindow(
   }, 200);
 }
 
-export default function StudentsPage() {
+export function StudentsPage({ roster = "active" }: StudentsPageProps) {
   const { user } = useAuth();
+  const isInactiveRoster = roster === "inactive";
   const canManageStudents = user?.role === "super_admin" || user?.role === "school_admin";
+  const canMarkAbsent = !isInactiveRoster && (canManageStudents || user?.role === "teacher");
   const [search, setSearch] = useState("");
   const [gradeFilter, setGradeFilter] = useState("all");
   const [sectionFilter, setSectionFilter] = useState("all");
@@ -156,7 +221,7 @@ export default function StudentsPage() {
   const { toast } = useToast();
 
   const { data: students, isLoading } = useQuery<StudentWithRelations[]>({
-    queryKey: [`/api/students?search=${search}`],
+    queryKey: [`/api/students?search=${search}&status=${roster}`],
   });
 
   const { data: gradeLevels } = useQuery<GradeLevel[]>({
@@ -167,17 +232,19 @@ export default function StudentsPage() {
     queryKey: ["/api/sections"],
   });
 
+  const sortedStudents = [...(students || [])].sort(compareStudentsByRosterOrder);
+
   const filteredSections = (sections || []).filter((section) =>
     gradeFilter === "all" ? true : String(section.gradeLevelId) === gradeFilter,
   );
 
-  const visibleStudents = (students || []).filter((student) => {
+  const visibleStudents = sortedStudents.filter((student) => {
     if (gradeFilter !== "all" && String(student.gradeLevelId || "") !== gradeFilter) return false;
     if (sectionFilter !== "all" && String(student.sectionId || "") !== sectionFilter) return false;
     return true;
   });
 
-const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState({
     firstName: "",
     lastName: "",
     studentNo: "",
@@ -188,6 +255,9 @@ const [formData, setFormData] = useState({
     photoUrl: "",
     isActive: true,
   });
+  const formSections = (sections || []).filter((section) =>
+    !formData.gradeLevelId ? true : String(section.gradeLevelId) === formData.gradeLevelId,
+  );
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string>("");
   const todayIso = localIsoDate();
@@ -226,6 +296,15 @@ const [formData, setFormData] = useState({
     setPhotoPreviewUrl(localUrl);
     return () => URL.revokeObjectURL(localUrl);
   }, [photoFile]);
+
+  useEffect(() => {
+    if (!formData.sectionId) return;
+    const selectedSection = (sections || []).find((section) => String(section.id) === formData.sectionId);
+    if (!selectedSection) return;
+    if (formData.gradeLevelId && String(selectedSection.gradeLevelId) !== formData.gradeLevelId) {
+      setFormData((prev) => ({ ...prev, sectionId: "" }));
+    }
+  }, [formData.gradeLevelId, formData.sectionId, sections]);
 
   const saveMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -457,6 +536,17 @@ const openEdit = (student: StudentWithRelations) => {
     }
   };
 
+  const pageTitle = isInactiveRoster ? "Inactive Students" : "Students";
+  const pageDescription = isInactiveRoster
+    ? `${visibleStudents.length} of ${students?.length ?? 0} inactive students shown`
+    : `${visibleStudents.length} of ${students?.length ?? 0} active students shown`;
+  const printTitle = isInactiveRoster
+    ? `Inactive Student QR Codes (${students?.length || 0})`
+    : `Student QR Codes (${students?.length || 0})`;
+  const emptyStateText = isInactiveRoster
+    ? "No inactive students found for the current filters"
+    : "No active students found for the current filters";
+
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 flex-wrap">
@@ -465,39 +555,44 @@ const openEdit = (student: StudentWithRelations) => {
             <Users className="h-5 w-5 text-primary" />
           </div>
           <div>
-            <h1 className="text-xl font-bold" data-testid="text-students-title">Students</h1>
-            <p className="text-sm text-muted-foreground">
-              {visibleStudents.length} of {students?.length ?? 0} students shown
-            </p>
+            <h1 className="text-xl font-bold" data-testid="text-students-title">{pageTitle}</h1>
+            <p className="text-sm text-muted-foreground">{pageDescription}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button asChild variant="outline" data-testid="button-open-promotion-page">
-            <Link href="/students/promotion">
-              <ArrowUpCircle className="h-4 w-4 mr-1" />
-              Bulk Promotion
+          <Button asChild variant="outline" data-testid="button-switch-student-roster">
+            <Link href={isInactiveRoster ? "/students" : "/students/inactive"}>
+              {isInactiveRoster ? "View Active Students" : "View Inactive Students"}
             </Link>
           </Button>
+          {canManageStudents && (
+            <Button asChild variant="outline" data-testid="button-open-promotion-page">
+              <Link href="/students/promotion">
+                <ArrowUpCircle className="h-4 w-4 mr-1" />
+                Bulk Promotion
+              </Link>
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={() =>
               printStudents(
-                (students || []).map((s) => ({
+                visibleStudents.map((s) => ({
                   firstName: s.firstName,
                   lastName: s.lastName,
                   studentNo: s.studentNo,
                   qrToken: s.qrToken,
                 })),
-                `Student QR Codes (${students?.length || 0})`,
+                printTitle,
               )
             }
-            disabled={isPrinting || isLoading || !students?.length}
+            disabled={isPrinting || isLoading || !visibleStudents.length}
             data-testid="button-print-all-qr"
           >
             <Printer className="h-4 w-4 mr-1" />
             {isPrinting ? "Preparing..." : "Print Filtered QR"}
           </Button>
-          {canManageStudents && selectedIds.length > 0 && (
+          {canManageStudents && !isInactiveRoster && selectedIds.length > 0 && (
             <Button
               variant="outline"
               onClick={() => setBulkAssignDialogOpen(true)}
@@ -518,7 +613,7 @@ const openEdit = (student: StudentWithRelations) => {
               {bulkDeleteMutation.isPending ? "Deleting..." : `Delete Selected (${selectedIds.length})`}
             </Button>
           )}
-          {canManageStudents && (
+          {canManageStudents && !isInactiveRoster && (
             <Button onClick={openCreate} data-testid="button-add-student">
               <Plus className="h-4 w-4 mr-1" />
               Add Student
@@ -554,7 +649,7 @@ const openEdit = (student: StudentWithRelations) => {
                 <SelectItem value="all">All grade levels</SelectItem>
                 {gradeLevels?.map((gradeLevel) => (
                   <SelectItem key={gradeLevel.id} value={String(gradeLevel.id)}>
-                    {gradeLevel.name}
+                    {formatGradeLevel(gradeLevel.name)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -600,7 +695,7 @@ const openEdit = (student: StudentWithRelations) => {
                     )}
                     <th className="text-left py-3 px-4 font-medium">Student</th>
                     <th className="text-left py-3 px-4 font-medium">ID</th>
-                    <th className="text-left py-3 px-4 font-medium">Grade / Section</th>
+                    <th className="text-left py-3 px-4 font-medium">Grade</th>
                     <th className="text-left py-3 px-4 font-medium">Guardian</th>
                     <th className="text-left py-3 px-4 font-medium">Status</th>
                     <th className="text-right py-3 px-4 font-medium">Actions</th>
@@ -631,7 +726,7 @@ const openEdit = (student: StudentWithRelations) => {
                       </td>
                       <td className="py-3 px-4 text-muted-foreground">{student.studentNo}</td>
                       <td className="py-3 px-4 text-muted-foreground">
-                        {student.gradeLevelName || "—"} / {student.sectionName || "—"}
+                        {formatGradeLevel(student.gradeLevelName)}
                       </td>
                       <td className="py-3 px-4 text-muted-foreground">
                         {student.guardianPhone || "—"}
@@ -683,25 +778,29 @@ const openEdit = (student: StudentWithRelations) => {
                               >
                                 <Trash2 className="h-4 w-4" />
                               </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => openStatusDialog(student, "absent")}
-                                title="Mark absent"
-                                data-testid={`button-absent-student-${student.id}`}
-                              >
-                                <UserX className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => openStatusDialog(student, "excused")}
-                                title="Mark excused"
-                                data-testid={`button-excused-student-${student.id}`}
-                              >
-                                <CheckCircle2 className="h-4 w-4" />
-                              </Button>
+                              {!isInactiveRoster && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => openStatusDialog(student, "excused")}
+                                  title="Mark excused"
+                                  data-testid={`button-excused-student-${student.id}`}
+                                >
+                                  <CheckCircle2 className="h-4 w-4" />
+                                </Button>
+                              )}
                             </>
+                          )}
+                          {canMarkAbsent && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => openStatusDialog(student, "absent")}
+                              title="Mark absent"
+                              data-testid={`button-absent-student-${student.id}`}
+                            >
+                              <UserX className="h-4 w-4" />
+                            </Button>
                           )}
                         </div>
                       </td>
@@ -713,13 +812,13 @@ const openEdit = (student: StudentWithRelations) => {
           ) : (
             <div className="p-12 text-center">
               <Users className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
-              <p className="text-muted-foreground">No students found for the current filters</p>
+              <p className="text-muted-foreground">{emptyStateText}</p>
             </div>
           )}
         </CardContent>
       </Card>
 
-      <Dialog open={canManageStudents && statusDialogOpen} onOpenChange={setStatusDialogOpen}>
+      <Dialog open={canMarkAbsent && statusDialogOpen} onOpenChange={setStatusDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Mark {statusForm.status === "absent" ? "Absent" : "Excused"}</DialogTitle>
@@ -848,7 +947,7 @@ const openEdit = (student: StudentWithRelations) => {
                 <Select
                   value={formData.gradeLevelId}
                   onValueChange={(v) =>
-                    setFormData({ ...formData, gradeLevelId: v })
+                    setFormData((prev) => ({ ...prev, gradeLevelId: v }))
                   }
                 >
                   <SelectTrigger data-testid="select-grade-level">
@@ -857,7 +956,7 @@ const openEdit = (student: StudentWithRelations) => {
                   <SelectContent>
                     {gradeLevels?.map((gl) => (
                       <SelectItem key={gl.id} value={String(gl.id)}>
-                        {gl.name}
+                        {formatGradeLevel(gl.name)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -866,16 +965,17 @@ const openEdit = (student: StudentWithRelations) => {
               <div className="space-y-2">
                 <Label>Section</Label>
                 <Select
-                  value={formData.sectionId}
+                  value={formData.sectionId || "none"}
                   onValueChange={(v) =>
-                    setFormData({ ...formData, sectionId: v })
+                    setFormData({ ...formData, sectionId: v === "none" ? "" : v })
                   }
                 >
                   <SelectTrigger data-testid="select-section">
                     <SelectValue placeholder="Select" />
                   </SelectTrigger>
                   <SelectContent>
-                    {sections?.map((s) => (
+                    <SelectItem value="none">No section</SelectItem>
+                    {formSections.map((s) => (
                       <SelectItem key={s.id} value={String(s.id)}>
                         {s.name}
                       </SelectItem>
