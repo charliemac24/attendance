@@ -7,7 +7,6 @@ RUN node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.
   && npm install --omit=dev --package-lock=false
 
 COPY dist ./dist
-COPY public ./public
 COPY uploads ./uploads
 COPY tmp ./tmp
 COPY .htaccess ./

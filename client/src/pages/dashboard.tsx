@@ -392,7 +392,7 @@ export default function DashboardPage() {
             ) : gradeBreakdown.length > 0 ? (
               <div className="space-y-5">
                 <ChartContainer config={chartConfig} className="h-[260px] w-full">
-                  <BarChart data={gradeBreakdown} margin={{ top: 16, right: 8, left: -16, bottom: 0 }}>
+                  <BarChart data={gradeBreakdown} margin={{ top: 16, right: 8, left: 20, bottom: 0 }}>
                     <CartesianGrid vertical={false} />
                     <XAxis
                       dataKey="gradeLevel"
@@ -405,8 +405,9 @@ export default function DashboardPage() {
                       tickLine={false}
                       axisLine={false}
                       tickMargin={8}
-                      width={36}
+                      width={72}
                       domain={[0, 100]}
+                      allowDecimals={false}
                       tickFormatter={(value) => `${value}%`}
                     />
                     <ChartTooltip
