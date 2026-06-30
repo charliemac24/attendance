@@ -10,7 +10,7 @@ import fs from "fs";
 import path from "path";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "./db";
-import { attendanceEvents, dailyAttendances, gradeLevels, schools, sections, smsLogs, students } from "@shared/schema";
+import { attendanceEvents, dailyAttendances, gradeLevels, schools, sections, smsLogs, students, type Student } from "@shared/schema";
 
 const MemoryStore = createMemoryStore(session);
 const upload = multer({ storage: multer.memoryStorage() });
@@ -209,6 +209,117 @@ function mysqlDateTime(value: string) {
 
 function hasNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function parseScannedQrPayload(rawValue: unknown): {
+  tokenCandidates: string[];
+  studentNoCandidates: string[];
+  studentIdCandidates: number[];
+} {
+  const raw = String(rawValue || "").trim();
+  const tokenCandidates = new Set<string>();
+  const studentNoCandidates = new Set<string>();
+  const studentIdCandidates = new Set<number>();
+
+  const addToken = (value: unknown) => {
+    const normalized = String(value || "").trim();
+    if (!normalized) return;
+    tokenCandidates.add(normalized);
+    if (/^[0-9a-f]{32}$/i.test(normalized)) {
+      tokenCandidates.add(normalized.toLowerCase());
+    }
+  };
+
+  const addStudentNo = (value: unknown) => {
+    const normalized = String(value || "").trim();
+    if (!normalized) return;
+    studentNoCandidates.add(normalized);
+  };
+
+  const addStudentId = (value: unknown) => {
+    const normalized = String(value || "").trim();
+    if (!/^\d+$/.test(normalized)) return;
+    studentIdCandidates.add(Number(normalized));
+  };
+
+  if (!raw) {
+    return { tokenCandidates: [], studentNoCandidates: [], studentIdCandidates: [] };
+  }
+
+  addToken(raw);
+  addStudentNo(raw);
+  addStudentId(raw);
+
+  try {
+    const decoded = decodeURIComponent(raw);
+    if (decoded !== raw) {
+      addToken(decoded);
+      addStudentNo(decoded);
+      addStudentId(decoded);
+    }
+  } catch {
+    // ignore malformed escape sequences in scanned payloads
+  }
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const url = new URL(raw);
+      const keys = ["qrtoken", "token", "qr", "code", "studentno", "student_no", "studentid", "student_id", "id"];
+      for (const key of keys) {
+        const value = url.searchParams.get(key);
+        if (!value) continue;
+        addToken(value);
+        if (key.includes("studentno")) addStudentNo(value);
+        if (key.includes("studentid") || key === "id") addStudentId(value);
+      }
+
+      const pathSegments = url.pathname.split("/").map((part) => part.trim()).filter(Boolean);
+      const lastSegment = pathSegments[pathSegments.length - 1];
+      if (lastSegment) {
+        addToken(lastSegment);
+        addStudentNo(lastSegment);
+        addStudentId(lastSegment);
+      }
+    } catch {
+      // If URL parsing fails, continue with the raw scanned value only.
+    }
+  }
+
+  return {
+    tokenCandidates: Array.from(tokenCandidates),
+    studentNoCandidates: Array.from(studentNoCandidates),
+    studentIdCandidates: Array.from(studentIdCandidates),
+  };
+}
+
+async function resolveStudentFromScannedQr(
+  schoolId: number,
+  rawValue: unknown,
+): Promise<Student | undefined> {
+  const parsed = parseScannedQrPayload(rawValue);
+
+  for (const candidate of parsed.tokenCandidates) {
+    const student = await storage.getStudentByQrToken(candidate);
+    if (student && student.schoolId === schoolId) {
+      return student;
+    }
+  }
+
+  for (const candidate of parsed.studentNoCandidates) {
+    const student = await storage.getStudentBySchoolAndStudentNo(schoolId, candidate);
+    if (student) {
+      return student;
+    }
+  }
+
+  for (const candidate of parsed.studentIdCandidates) {
+    const student = await storage.getStudentBySchoolAndId(schoolId, candidate);
+    if (student) {
+      return student;
+    }
+  }
+
+  return undefined;
 }
 
 function isIsoDateString(value: string): boolean {
@@ -1631,19 +1742,26 @@ export async function registerRoutes(
         return res.status(400).json({ success: false, message: "A valid kiosk location is required." });
       }
 
-      const student = await storage.getStudentByQrToken(normalizedToken);
+      const kiosk = await storage.getKiosk(normalizedKioskId);
+      if (!kiosk) {
+        return res.status(400).json({ success: false, message: "Kiosk location is invalid." });
+      }
+
+      if (actor.role !== "super_admin" && actor.schoolId !== kiosk.schoolId) {
+        return res.status(403).json({ success: false, message: "You do not have access to this kiosk." });
+      }
+
+      const student = await resolveStudentFromScannedQr(kiosk.schoolId, normalizedToken);
       if (!student) {
-        return res.json({ success: false, message: "Student not found. Invalid QR code." });
+        return res.json({ success: false, message: "Student not found. Invalid or outdated QR code." });
       }
 
       if (actor.role !== "super_admin" && actor.schoolId !== student.schoolId) {
         return res.status(403).json({ success: false, message: "You do not have access to scan for this school." });
       }
 
-      const kiosks = await storage.getKiosks(student.schoolId);
-      const kiosk = kiosks.find((entry) => entry.id === normalizedKioskId);
-      if (!kiosk) {
-        return res.status(400).json({ success: false, message: "Kiosk location is invalid for this school." });
+      if (student.schoolId !== kiosk.schoolId) {
+        return res.status(400).json({ success: false, message: "QR code does not belong to this kiosk's school." });
       }
 
       if (!student.isActive) {

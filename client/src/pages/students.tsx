@@ -75,8 +75,8 @@ async function toPrintableItems(students: PrintableStudent[]) {
       fullName: `${student.firstName} ${student.lastName}`,
       studentNo: student.studentNo,
       qrDataUrl: await QRCode.toDataURL(student.qrToken, {
-        width: 220,
-        margin: 1,
+        width: 320,
+        margin: 3,
       }),
     })),
   );
@@ -182,7 +182,7 @@ function renderPrintWindow(
             box-sizing: border-box;
             overflow: hidden;
           }
-          .card img { width: 42mm; height: 42mm; display: block; margin: 0 auto 4mm; flex: 0 0 auto; }
+          .card img { width: 42mm; height: 42mm; display: block; margin: 0 auto 4mm; flex: 0 0 auto; image-rendering: pixelated; }
           .name {
             font-size: 11px;
             font-weight: 600;

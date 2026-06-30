@@ -58,6 +58,8 @@ export interface IStorage {
   getStudents(schoolId: number, search?: string, status?: "active" | "inactive" | "all"): Promise<any[]>;
   getStudent(id: number): Promise<Student | undefined>;
   getStudentByQrToken(qrToken: string): Promise<Student | undefined>;
+  getStudentBySchoolAndStudentNo(schoolId: number, studentNo: string): Promise<Student | undefined>;
+  getStudentBySchoolAndId(schoolId: number, studentId: number): Promise<Student | undefined>;
   getActiveStudents(schoolId: number): Promise<Student[]>;
   createStudent(data: InsertStudent): Promise<Student>;
   updateStudent(id: number, data: Partial<InsertStudent>): Promise<Student | undefined>;
@@ -105,6 +107,7 @@ export interface IStorage {
 
   // Kiosks
   getKiosks(schoolId: number): Promise<KioskLocation[]>;
+  getKiosk(id: number): Promise<KioskLocation | undefined>;
   createKiosk(data: InsertKioskLocation): Promise<KioskLocation>;
   updateKiosk(id: number, data: Partial<InsertKioskLocation>): Promise<KioskLocation | undefined>;
   deleteKiosk(id: number): Promise<void>;
@@ -349,6 +352,22 @@ export class DatabaseStorage implements IStorage {
 
   async getStudentByQrToken(qrToken: string): Promise<Student | undefined> {
     const [student] = await db.select().from(students).where(eq(students.qrToken, qrToken));
+    return student;
+  }
+
+  async getStudentBySchoolAndStudentNo(schoolId: number, studentNo: string): Promise<Student | undefined> {
+    const [student] = await db
+      .select()
+      .from(students)
+      .where(and(eq(students.schoolId, schoolId), eq(students.studentNo, studentNo)));
+    return student;
+  }
+
+  async getStudentBySchoolAndId(schoolId: number, studentId: number): Promise<Student | undefined> {
+    const [student] = await db
+      .select()
+      .from(students)
+      .where(and(eq(students.schoolId, schoolId), eq(students.id, studentId)));
     return student;
   }
 
@@ -702,6 +721,11 @@ export class DatabaseStorage implements IStorage {
 
   async getKiosks(schoolId: number): Promise<KioskLocation[]> {
     return db.select().from(kioskLocations).where(eq(kioskLocations.schoolId, schoolId));
+  }
+
+  async getKiosk(id: number): Promise<KioskLocation | undefined> {
+    const [kiosk] = await db.select().from(kioskLocations).where(eq(kioskLocations.id, id));
+    return kiosk;
   }
 
   async createKiosk(data: InsertKioskLocation): Promise<KioskLocation> {
