@@ -22,6 +22,8 @@ export default function SettingsSchoolPage() {
 
   const [formData, setFormData] = useState({
     name: "",
+    loginSlug: "",
+    logoUrl: "",
     timezone: "Asia/Manila",
     lateTime: "08:00",
     cutoffTime: "09:00",
@@ -34,12 +36,19 @@ export default function SettingsSchoolPage() {
     earlyOutWindowMinutes: 30,
     showStudentsNeedingAttention: true,
   });
-  const [purgeDate, setPurgeDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const today = new Date().toISOString().slice(0, 10);
+  const [purgeFrom, setPurgeFrom] = useState<string>(today);
+  const [purgeTo, setPurgeTo] = useState<string>(today);
+  const [purgeDeleteAttendance, setPurgeDeleteAttendance] = useState(true);
+  const [purgeDeleteSms, setPurgeDeleteSms] = useState(true);
+  const [logoUploadBusy, setLogoUploadBusy] = useState(false);
 
   useEffect(() => {
     if (school) {
       setFormData({
         name: school.name,
+        loginSlug: school.loginSlug || "",
+        logoUrl: school.logoUrl || "",
         timezone: school.timezone,
         lateTime: school.lateTime?.substring(0, 5) || "08:00",
         cutoffTime: school.cutoffTime?.substring(0, 5) || "09:00",
@@ -71,9 +80,10 @@ export default function SettingsSchoolPage() {
   const purgeLogsMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/settings/purge-logs", {
-        date: purgeDate,
-        deleteAttendance: true,
-        deleteSms: true,
+        from: purgeFrom,
+        to: purgeTo,
+        deleteAttendance: purgeDeleteAttendance,
+        deleteSms: purgeDeleteSms,
       });
       return res.json();
     },
@@ -82,7 +92,7 @@ export default function SettingsSchoolPage() {
         title: "Logs purged",
         description: `Attendance events: ${data.attendanceEventsDeleted}, attendance records: ${data.dailyAttendancesDeleted}, SMS logs: ${data.smsLogsDeleted}`,
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/sms-logs"] });
+      queryClient.invalidateQueries({ queryKey: ["sms-logs"] });
       queryClient.invalidateQueries({
         predicate: (query) => (query.queryKey[0] as string)?.startsWith("/api/dashboard"),
       });
@@ -91,6 +101,31 @@ export default function SettingsSchoolPage() {
       toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
+
+  const uploadLogo = async (file: File) => {
+    const body = new FormData();
+    body.append("logo", file);
+    setLogoUploadBusy(true);
+    try {
+      const res = await fetch("/api/settings/school/logo", {
+        method: "POST",
+        body,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const raw = await res.text();
+        throw new Error(raw || "Logo upload failed");
+      }
+      const data = await res.json();
+      setFormData((prev) => ({ ...prev, logoUrl: data.logoUrl || "" }));
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/school"] });
+      toast({ title: "Logo uploaded" });
+    } catch (err: any) {
+      toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+    } finally {
+      setLogoUploadBusy(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -133,6 +168,39 @@ export default function SettingsSchoolPage() {
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 data-testid="input-school-name"
               />
+            </div>
+            <div className="space-y-2">
+              <Label>Login Slug</Label>
+              <Input
+                value={formData.loginSlug}
+                onChange={(e) => setFormData({ ...formData, loginSlug: e.target.value })}
+                placeholder="stars"
+                data-testid="input-school-login-slug"
+              />
+              <p className="text-sm text-muted-foreground">
+                Branded login URL: <span className="font-mono">/?school={formData.loginSlug || "stars"}</span>
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Login Logo</Label>
+              <Input
+                type="file"
+                accept="image/*"
+                disabled={logoUploadBusy}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    uploadLogo(file);
+                  }
+                  e.currentTarget.value = "";
+                }}
+                data-testid="input-school-logo"
+              />
+              {formData.logoUrl ? (
+                <div className="rounded-md border p-3">
+                  <img src={formData.logoUrl} alt="School logo preview" className="h-20 w-20 rounded-md object-contain" />
+                </div>
+              ) : null}
             </div>
             <div className="space-y-2">
               <Label>Timezone</Label>
@@ -232,33 +300,70 @@ export default function SettingsSchoolPage() {
           <CardHeader>
             <h2 className="text-base font-semibold">Purge Logs By Date</h2>
             <p className="text-sm text-muted-foreground">
-              Deletes attendance logs and SMS logs for the currently selected school and date.
+              Deletes attendance logs and/or SMS logs for the currently selected school within a date range.
             </p>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label>Date</Label>
-              <Input
-                type="date"
-                value={purgeDate}
-                onChange={(e) => setPurgeDate(e.target.value)}
-                data-testid="input-purge-logs-date"
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>From</Label>
+                <Input
+                  type="date"
+                  value={purgeFrom}
+                  onChange={(e) => setPurgeFrom(e.target.value)}
+                  data-testid="input-purge-logs-from"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>To</Label>
+                <Input
+                  type="date"
+                  value={purgeTo}
+                  onChange={(e) => setPurgeTo(e.target.value)}
+                  data-testid="input-purge-logs-to"
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <Label>Delete Daily Attendance</Label>
+                <p className="text-sm text-muted-foreground">
+                  Removes daily attendance records and attendance events in the selected range.
+                </p>
+              </div>
+              <Switch
+                checked={purgeDeleteAttendance}
+                onCheckedChange={setPurgeDeleteAttendance}
+                data-testid="switch-purge-delete-attendance"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <Label>Delete SMS Logs</Label>
+                <p className="text-sm text-muted-foreground">
+                  Removes SMS log history in the selected range.
+                </p>
+              </div>
+              <Switch
+                checked={purgeDeleteSms}
+                onCheckedChange={setPurgeDeleteSms}
+                data-testid="switch-purge-delete-sms"
               />
             </div>
             <Button
               variant="destructive"
-              disabled={!purgeDate || purgeLogsMutation.isPending}
-              data-testid="button-purge-logs-date"
+              disabled={!purgeFrom || !purgeTo || (!purgeDeleteAttendance && !purgeDeleteSms) || purgeLogsMutation.isPending}
+              data-testid="button-purge-logs-range"
               onClick={() => {
                 if (!school) return;
                 const ok = window.confirm(
-                  `Delete attendance logs and SMS logs for ${school.name} on ${purgeDate}? This cannot be undone.`,
+                  `Delete the selected logs for ${school.name} from ${purgeFrom} to ${purgeTo}? This cannot be undone.`,
                 );
                 if (!ok) return;
                 purgeLogsMutation.mutate();
               }}
             >
-              {purgeLogsMutation.isPending ? "Purging..." : "Delete Logs For Date"}
+              {purgeLogsMutation.isPending ? "Purging..." : "Delete Logs For Date Range"}
             </Button>
           </CardContent>
         </Card>

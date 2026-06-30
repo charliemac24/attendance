@@ -1,15 +1,102 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MessageSquare } from "lucide-react";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth";
 import type { SmsLog } from "@shared/schema";
 
 type SmsLogWithStudent = SmsLog & { studentName?: string };
 
+async function downloadSmsCsv(from: string, to: string) {
+  const res = await fetch(`/api/sms-logs/export?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {
+    credentials: "include",
+  });
+
+  if (!res.ok) {
+    const raw = await res.text();
+    let message = raw || "Failed to export SMS logs";
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.message === "string" && parsed.message.trim()) {
+        message = parsed.message.trim();
+      }
+    } catch {
+      // keep raw message
+    }
+    throw new Error(message);
+  }
+
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `sms-logs-${from}-to-${to}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 export default function SmsLogsPage() {
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const today = new Date().toISOString().slice(0, 10);
+  const [fromDate, setFromDate] = useState(today);
+  const [toDate, setToDate] = useState(today);
+
   const { data: logs, isLoading } = useQuery<SmsLogWithStudent[]>({
-    queryKey: ["/api/sms-logs"],
+    queryKey: ["sms-logs", fromDate, toDate],
+    queryFn: async () => {
+      const res = await fetch(`/api/sms-logs?from=${encodeURIComponent(fromDate)}&to=${encodeURIComponent(toDate)}`, {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const raw = await res.text();
+        throw new Error(raw || "Failed to load SMS logs");
+      }
+      return res.json();
+    },
+  });
+
+  const exportMutation = useMutation({
+    mutationFn: async () => {
+      await downloadSmsCsv(fromDate, toDate);
+    },
+    onSuccess: () => {
+      toast({ title: "CSV exported" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Export failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const deleteSmsLogsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/settings/purge-logs", {
+        from: fromDate,
+        to: toDate,
+        deleteAttendance: false,
+        deleteSms: true,
+      });
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      toast({
+        title: "SMS logs deleted",
+        description: `Deleted ${data.smsLogsDeleted} SMS logs from ${data.from} to ${data.to}.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["sms-logs"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "Delete failed", description: err.message, variant: "destructive" });
+    },
   });
 
   return (
@@ -20,6 +107,56 @@ export default function SmsLogsPage() {
         </div>
         <h1 className="text-xl font-bold" data-testid="text-sms-logs-title">SMS Logs</h1>
       </div>
+
+      <Card>
+        <CardContent className="p-6 space-y-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>From</Label>
+              <Input
+                type="date"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                data-testid="input-sms-logs-from"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>To</Label>
+              <Input
+                type="date"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                data-testid="input-sms-logs-to"
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <Button
+              onClick={() => exportMutation.mutate()}
+              disabled={!fromDate || !toDate || exportMutation.isPending}
+              data-testid="button-export-sms-logs-csv"
+            >
+              {exportMutation.isPending ? "Exporting..." : "Export CSV"}
+            </Button>
+            {user?.role === "super_admin" && (
+              <Button
+                variant="destructive"
+                disabled={!fromDate || !toDate || deleteSmsLogsMutation.isPending}
+                data-testid="button-delete-sms-logs-range"
+                onClick={() => {
+                  const ok = window.confirm(
+                    `Delete SMS logs from ${fromDate} to ${toDate}? This cannot be undone.`,
+                  );
+                  if (!ok) return;
+                  deleteSmsLogsMutation.mutate();
+                }}
+              >
+                {deleteSmsLogsMutation.isPending ? "Deleting..." : "Delete SMS Logs"}
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardContent className="p-0">
@@ -56,8 +193,8 @@ export default function SmsLogsPage() {
                             log.status === "sent"
                               ? "default"
                               : log.status === "failed"
-                              ? "destructive"
-                              : "secondary"
+                                ? "destructive"
+                                : "secondary"
                           }
                           className="no-default-hover-elevate no-default-active-elevate"
                         >
@@ -83,7 +220,7 @@ export default function SmsLogsPage() {
           ) : (
             <div className="p-12 text-center">
               <MessageSquare className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
-              <p className="text-muted-foreground">No SMS logs yet</p>
+              <p className="text-muted-foreground">No SMS logs found in the selected date range</p>
             </div>
           )}
         </CardContent>

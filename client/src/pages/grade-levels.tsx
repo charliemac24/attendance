@@ -18,6 +18,7 @@ export default function GradeLevelsPage() {
   const [gradeToDelete, setGradeToDelete] = useState<GradeLevel | null>(null);
   const [editing, setEditing] = useState<GradeLevel | null>(null);
   const [name, setName] = useState("");
+  const [lateTimeOverride, setLateTimeOverride] = useState("");
   const { toast } = useToast();
 
   const { data: gradeLevels, isLoading } = useQuery<GradeLevel[]>({
@@ -28,10 +29,14 @@ export default function GradeLevelsPage() {
 
   const saveMutation = useMutation({
     mutationFn: async () => {
+      const payload = {
+        name: displayName(name),
+        lateTimeOverride: lateTimeOverride || null,
+      };
       if (editing) {
-        await apiRequest("PATCH", `/api/grade-levels/${editing.id}`, { name: displayName(name) });
+        await apiRequest("PATCH", `/api/grade-levels/${editing.id}`, payload);
       } else {
-        await apiRequest("POST", "/api/grade-levels", { name: displayName(name) });
+        await apiRequest("POST", "/api/grade-levels", payload);
       }
     },
     onSuccess: () => {
@@ -39,6 +44,7 @@ export default function GradeLevelsPage() {
       setDialogOpen(false);
       setEditing(null);
       setName("");
+      setLateTimeOverride("");
       toast({ title: editing ? "Grade level updated" : "Grade level created" });
     },
     onError: (err: any) => {
@@ -79,6 +85,7 @@ export default function GradeLevelsPage() {
           onClick={() => {
             setEditing(null);
             setName("");
+            setLateTimeOverride("");
             setDialogOpen(true);
           }}
           data-testid="button-add-grade-level"
@@ -100,7 +107,12 @@ export default function GradeLevelsPage() {
             <div className="divide-y">
               {gradeLevels.map((gl) => (
                 <div key={gl.id} className="flex items-center justify-between gap-2 px-4 py-3" data-testid={`row-grade-${gl.id}`}>
-                  <span className="font-medium">{displayName(gl.name)}</span>
+                  <div>
+                    <span className="font-medium">{displayName(gl.name)}</span>
+                    {gl.lateTimeOverride ? (
+                      <p className="text-xs text-muted-foreground">Late override: {gl.lateTimeOverride.slice(0, 5)}</p>
+                    ) : null}
+                  </div>
                   <div className="flex items-center gap-1">
                     <Button
                       variant="ghost"
@@ -108,6 +120,7 @@ export default function GradeLevelsPage() {
                       onClick={() => {
                         setEditing(gl);
                         setName(displayName(gl.name));
+                        setLateTimeOverride(gl.lateTimeOverride?.slice(0, 5) || "");
                         setDialogOpen(true);
                       }}
                       data-testid={`button-edit-grade-${gl.id}`}
@@ -158,6 +171,18 @@ export default function GradeLevelsPage() {
                 required
                 data-testid="input-grade-level-name"
               />
+            </div>
+            <div className="space-y-2">
+              <Label>Late Time Override</Label>
+              <Input
+                type="time"
+                value={lateTimeOverride}
+                onChange={(e) => setLateTimeOverride(e.target.value)}
+                data-testid="input-grade-level-late-time-override"
+              />
+              <p className="text-sm text-muted-foreground">
+                Leave blank to use the school-wide late time.
+              </p>
             </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>

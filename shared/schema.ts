@@ -18,6 +18,8 @@ import { z } from "zod";
 export const schools = mysqlTable("schools", {
   id: int("id").autoincrement().primaryKey(),
   name: varchar("name", { length: 191 }).notNull(),
+  loginSlug: varchar("login_slug", { length: 100 }).unique(),
+  logoUrl: varchar("logo_url", { length: 255 }),
   timezone: varchar("timezone", { length: 64 }).notNull().default("Asia/Manila"),
   lateTime: time("late_time").notNull().default("08:00:00"),
   cutoffTime: time("cutoff_time").notNull().default("09:00:00"),
@@ -58,6 +60,7 @@ export const gradeLevels = mysqlTable(
       .notNull()
       .references(() => schools.id),
     name: varchar("name", { length: 64 }).notNull(),
+    lateTimeOverride: time("late_time_override"),
   },
   (table) => [
     index("grade_levels_school_idx").on(table.schoolId),

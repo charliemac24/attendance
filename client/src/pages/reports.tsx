@@ -105,6 +105,30 @@ export default function ReportsPage() {
     },
   });
 
+  const bulkDeleteAttendanceMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/reports/attendance/bulk-delete", {
+        startDate,
+        endDate,
+        grade: gradeFilter,
+        section: sectionFilter,
+        studentName: studentNameFilter,
+        studentNo: studentNoFilter,
+      });
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: [reportQueryUrl] });
+      toast({
+        title: "Attendance records deleted",
+        description: `Deleted ${data.dailyAttendancesDeleted} attendance records and ${data.attendanceEventsDeleted} attendance events.`,
+      });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
   const handleExport = () => {
     if (reportType === "sms-billing") {
       window.open(`/api/reports/sms-billing/export?month=${month}`, "_blank");
@@ -132,6 +156,23 @@ export default function ReportsPage() {
           <Download className="h-4 w-4 mr-1" />
           Export CSV
         </Button>
+        {user?.role === "super_admin" && reportType === "daily" && (
+          <Button
+            variant="destructive"
+            onClick={() => {
+              const ok = window.confirm(
+                `Delete all daily attendance records matching the current filter from ${startDate} to ${endDate}? This cannot be undone.`,
+              );
+              if (!ok) return;
+              bulkDeleteAttendanceMutation.mutate();
+            }}
+            disabled={bulkDeleteAttendanceMutation.isPending}
+            data-testid="button-delete-daily-attendance-range"
+          >
+            <Trash2 className="h-4 w-4 mr-1" />
+            {bulkDeleteAttendanceMutation.isPending ? "Deleting..." : "Delete Attendance"}
+          </Button>
+        )}
       </div>
 
       <Card>

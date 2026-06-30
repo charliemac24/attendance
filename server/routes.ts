@@ -90,6 +90,23 @@ function normalizePhone(phone: string): string {
   return digits;
 }
 
+function slugifySchoolLabel(value: string): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 100);
+}
+
+function formatSchoolLabelFromSlug(value: string): string {
+  const words = String(value || "")
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => part.toUpperCase());
+  return words.join(" ");
+}
+
 function renderSmsTemplate(template: string, variables: Record<string, string>): string {
   return template.replace(/\{([a-z_]+)\}/gi, (_m, token) => {
     const key = String(token).toLowerCase();
@@ -192,6 +209,29 @@ function mysqlDateTime(value: string) {
 
 function hasNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isIsoDateString(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function getDateRangeOrThrow(input: { from?: unknown; to?: unknown; date?: unknown }): { from: string; to: string } {
+  const from = String(input.from || input.date || "").trim();
+  const to = String(input.to || input.date || "").trim();
+
+  if (!isIsoDateString(from) || !isIsoDateString(to)) {
+    throw new Error("Invalid date range. Use YYYY-MM-DD.");
+  }
+
+  if (from > to) {
+    throw new Error("Invalid date range. 'From' must be on or before 'To'.");
+  }
+
+  return { from, to };
+}
+
+function csvCell(value: unknown): string {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
 }
 
 async function sendSemaphoreMessage(apiKey: string, senderName: string | null, toPhone: string, message: string) {
@@ -586,6 +626,15 @@ function isLateStoredDateTimeForSchool(checkInTime: Date | string, lateTime: str
   return hour > lateHour || (hour === lateHour && minute > lateMinute);
 }
 
+async function getEffectiveLateTimeForStudent(student: { gradeLevelId?: number | null }, school: { lateTime: string }) {
+  if (!student.gradeLevelId) {
+    return school.lateTime;
+  }
+
+  const gradeLevel = await storage.getGradeLevel(Number(student.gradeLevelId));
+  return gradeLevel?.lateTimeOverride || school.lateTime;
+}
+
 function normalizeDailyReportStatuses(records: any[]): any[] {
   return records.map((r: any) => {
     const hasCheckIn = Boolean(r?.checkInTime);
@@ -610,7 +659,9 @@ export async function registerRoutes(
 
   const uploadsRoot = path.resolve(process.cwd(), "uploads");
   const studentPhotoDir = path.join(uploadsRoot, "students");
+  const schoolLogoDir = path.join(uploadsRoot, "schools");
   fs.mkdirSync(studentPhotoDir, { recursive: true });
+  fs.mkdirSync(schoolLogoDir, { recursive: true });
   app.use("/uploads", express.static(uploadsRoot));
 
   app.use(
@@ -670,6 +721,39 @@ export async function registerRoutes(
   app.post("/api/auth/logout", (req, res) => {
     req.session.destroy(() => {});
     res.json({ ok: true });
+  });
+
+  app.get("/api/public/school-branding", async (req, res) => {
+    try {
+      const schoolParam = String(req.query.school || "").trim();
+      if (!schoolParam) {
+        return res.json({
+          school: null,
+          displayName: "MYO School Attendance",
+          logoUrl: null,
+        });
+      }
+
+      const normalizedSlug = slugifySchoolLabel(schoolParam);
+      const school = normalizedSlug ? await storage.getSchoolByLoginSlug(normalizedSlug) : undefined;
+      const brandedDisplayName = normalizedSlug
+        ? `${formatSchoolLabelFromSlug(normalizedSlug)} School Attendance`
+        : "MYO School Attendance";
+      return res.json({
+        school: school
+          ? {
+              id: school.id,
+              name: school.name,
+              loginSlug: school.loginSlug,
+              logoUrl: school.logoUrl,
+            }
+          : null,
+        displayName: brandedDisplayName,
+        logoUrl: school?.logoUrl || null,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
   });
 
   app.get("/api/auth/me", async (req, res) => {
@@ -1236,7 +1320,9 @@ export async function registerRoutes(
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.status(400).json({ message: "No school context" });
 
-      const studentIds = Array.isArray(req.body?.studentIds) ? req.body.studentIds.map((value: any) => Number(value)) : [];
+      const studentIds: number[] = Array.isArray(req.body?.studentIds)
+        ? req.body.studentIds.map((value: any) => Number(value))
+        : [];
       const sectionId =
         req.body?.sectionId === null || req.body?.sectionId === undefined || req.body?.sectionId === ""
           ? null
@@ -1528,12 +1614,36 @@ export async function registerRoutes(
   });
 
   // Kiosk Scan
-  app.post("/api/kiosk/scan", requireAuth, async (req, res) => {
+  app.post("/api/kiosk/scan", requireAuth, requireRole("super_admin", "school_admin", "gate_staff"), async (req, res) => {
     try {
       const { qrToken, kioskLocationId } = req.body;
-      const student = await storage.getStudentByQrToken(qrToken);
+      const actor = await storage.getUserById(req.session.userId!);
+      if (!actor) {
+        return res.status(401).json({ success: false, message: "User not found." });
+      }
+
+      const normalizedToken = String(qrToken || "").trim();
+      const normalizedKioskId = Number(kioskLocationId);
+      if (!normalizedToken) {
+        return res.status(400).json({ success: false, message: "QR token is required." });
+      }
+      if (!Number.isInteger(normalizedKioskId) || normalizedKioskId <= 0) {
+        return res.status(400).json({ success: false, message: "A valid kiosk location is required." });
+      }
+
+      const student = await storage.getStudentByQrToken(normalizedToken);
       if (!student) {
         return res.json({ success: false, message: "Student not found. Invalid QR code." });
+      }
+
+      if (actor.role !== "super_admin" && actor.schoolId !== student.schoolId) {
+        return res.status(403).json({ success: false, message: "You do not have access to scan for this school." });
+      }
+
+      const kiosks = await storage.getKiosks(student.schoolId);
+      const kiosk = kiosks.find((entry) => entry.id === normalizedKioskId);
+      if (!kiosk) {
+        return res.status(400).json({ success: false, message: "Kiosk location is invalid for this school." });
       }
 
       if (!student.isActive) {
@@ -1601,7 +1711,8 @@ export async function registerRoutes(
       markStudentScanNow(student.id, now.getTime());
 
       if (!existingAttendance) {
-        const isLate = isLateNowForSchool(now, school.lateTime, school.timezone);
+        const effectiveLateTime = await getEffectiveLateTimeForStudent(student, school);
+        const isLate = isLateNowForSchool(now, effectiveLateTime, school.timezone);
 
         const status = isLate ? "late" : "pending_checkout";
 
@@ -1621,7 +1732,7 @@ export async function registerRoutes(
           eventType: isLate ? "late_check_in" : "check_in",
           occurredAt: mysqlDateTime(nowLocal) as any,
           performedByUserId: req.session.userId || null,
-          kioskLocationId: kioskLocationId || null,
+          kioskLocationId: kiosk.id,
           meta: null,
         });
 
@@ -1665,7 +1776,7 @@ export async function registerRoutes(
           eventType: "out_final",
           occurredAt: mysqlDateTime(nowLocal) as any,
           performedByUserId: req.session.userId || null,
-          kioskLocationId: kioskLocationId || null,
+          kioskLocationId: kiosk.id,
           meta: null,
         });
 
@@ -1703,7 +1814,7 @@ export async function registerRoutes(
         eventType: "scan_ignored",
         occurredAt: mysqlDateTime(nowLocal) as any,
         performedByUserId: req.session.userId || null,
-        kioskLocationId: kioskLocationId || null,
+        kioskLocationId: kiosk.id,
         meta: null,
       });
 
@@ -1754,7 +1865,8 @@ export async function registerRoutes(
           return res.status(400).json({ message: "Student already has attendance for today" });
         }
 
-        const isLate = isLateNowForSchool(now, school.lateTime, school.timezone);
+        const effectiveLateTime = await getEffectiveLateTimeForStudent(student, school);
+        const isLate = isLateNowForSchool(now, effectiveLateTime, school.timezone);
         const status = isLate ? "late" : "pending_checkout";
 
         const attendance = await storage.createDailyAttendance({
@@ -1927,12 +2039,58 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/settings/school/logo", requireAuth, requireRole("super_admin", "school_admin"), photoUpload.single("logo"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(400).json({ message: "No school context" });
+
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "No image uploaded" });
+      if (!file.mimetype.startsWith("image/")) {
+        return res.status(400).json({ message: "Only image files are allowed" });
+      }
+
+      const allowedExt = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg"]);
+      let ext = path.extname(file.originalname || "").toLowerCase();
+      if (!allowedExt.has(ext)) {
+        const mimeToExt: Record<string, string> = {
+          "image/jpeg": ".jpg",
+          "image/png": ".png",
+          "image/webp": ".webp",
+          "image/gif": ".gif",
+          "image/svg+xml": ".svg",
+        };
+        ext = mimeToExt[file.mimetype] || ".png";
+      }
+
+      const fileName = `${schoolId}-${Date.now()}-${randomBytes(6).toString("hex")}${ext}`;
+      const filePath = path.join(schoolLogoDir, fileName);
+      fs.writeFileSync(filePath, file.buffer);
+
+      const logoUrl = `/uploads/schools/${fileName}`;
+      const school = await storage.updateSchool(schoolId, { logoUrl });
+      res.json({ logoUrl, school });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.patch("/api/settings/school", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.status(404).json({ message: "No school" });
+      const normalizedLoginSlug = req.body.loginSlug === undefined
+        ? undefined
+        : slugifySchoolLabel(String(req.body.loginSlug || ""));
+      if (normalizedLoginSlug) {
+        const existing = await storage.getSchoolByLoginSlug(normalizedLoginSlug);
+        if (existing && existing.id !== schoolId) {
+          return res.status(400).json({ message: "Login slug is already used by another school." });
+        }
+      }
       const payload = {
         ...req.body,
+        loginSlug: normalizedLoginSlug === undefined ? req.body.loginSlug : normalizedLoginSlug || null,
         smsDailyCap: -1,
         smsSendMode: "ALL_MOVEMENTS",
         allowMultipleScans: true,
@@ -2101,10 +2259,7 @@ export async function registerRoutes(
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.status(404).json({ message: "No school" });
 
-      const date = String(req.body?.date || "").trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        return res.status(400).json({ message: "Invalid date. Use YYYY-MM-DD." });
-      }
+      const { from, to } = getDateRangeOrThrow(req.body || {});
 
       const deleteAttendance = req.body?.deleteAttendance !== false;
       const deleteSms = req.body?.deleteSms !== false;
@@ -2112,7 +2267,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Nothing to purge. Select at least one log type." });
       }
 
-      const result = await storage.purgeSchoolLogsByDate(schoolId, date, {
+      const result = await storage.purgeSchoolLogsByDateRange(schoolId, from, to, {
         deleteAttendance,
         deleteSms,
       });
@@ -2120,11 +2275,16 @@ export async function registerRoutes(
       res.json({
         success: true,
         schoolId,
-        date,
+        from,
+        to,
         ...result,
       });
     } catch (err: any) {
-      res.status(500).json({ message: err.message });
+      const message = err?.message || "Failed to purge logs";
+      if (message.startsWith("Invalid date range")) {
+        return res.status(400).json({ message });
+      }
+      res.status(500).json({ message });
     }
   });
 
@@ -2197,9 +2357,63 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.json([]);
-      res.json(await storage.getSmsLogs(schoolId));
+
+      const from = String(req.query.from || "").trim();
+      const to = String(req.query.to || "").trim();
+      if ((from && !isIsoDateString(from)) || (to && !isIsoDateString(to))) {
+        return res.status(400).json({ message: "Invalid date range. Use YYYY-MM-DD." });
+      }
+      if (from && to && from > to) {
+        return res.status(400).json({ message: "Invalid date range. 'From' must be on or before 'To'." });
+      }
+
+      res.json(await storage.getSmsLogs(schoolId, {
+        from: from || undefined,
+        to: to || undefined,
+        limit: 100,
+      }));
     } catch (err: any) {
       res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/sms-logs/export", requireAuth, async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(404).json({ message: "No school" });
+
+      const { from, to } = getDateRangeOrThrow({
+        from: req.query.from,
+        to: req.query.to,
+      });
+
+      const logs = await storage.getSmsLogs(schoolId, { from, to });
+      const headers = [
+        "studentName",
+        "templateType",
+        "toPhone",
+        "message",
+        "status",
+        "providerMessageId",
+        "errorMessage",
+        "sentAt",
+        "createdAt",
+      ];
+
+      const csvRows = [headers.join(",")];
+      for (const log of logs) {
+        csvRows.push(headers.map((header) => csvCell(log[header as keyof typeof log])).join(","));
+      }
+
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename=sms-logs-${from}-to-${to}.csv`);
+      res.send(csvRows.join("\n"));
+    } catch (err: any) {
+      const message = err?.message || "Failed to export SMS logs";
+      if (message.startsWith("Invalid date range")) {
+        return res.status(400).json({ message });
+      }
+      res.status(500).json({ message });
     }
   });
 
@@ -2418,6 +2632,45 @@ export async function registerRoutes(
       const deleted = await storage.deleteAttendanceById(schoolId, attendanceId);
       if (!deleted) return res.status(404).json({ message: "Attendance record not found" });
       return res.json({ ok: true });
+    } catch (err: any) {
+      return res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/reports/attendance/bulk-delete", requireAuth, requireRole("super_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(404).json({ message: "No school" });
+
+      const startDate = String(req.body?.startDate || "").trim();
+      const endDate = String(req.body?.endDate || "").trim();
+      if (!isIsoDateString(startDate) || !isIsoDateString(endDate)) {
+        return res.status(400).json({ message: "Invalid date range. Use YYYY-MM-DD." });
+      }
+      if (startDate > endDate) {
+        return res.status(400).json({ message: "Invalid date range. 'From' must be on or before 'To'." });
+      }
+
+      const gradeId = req.body?.grade && req.body.grade !== "all" ? Number(req.body.grade) : undefined;
+      const sectionId = req.body?.section && req.body.section !== "all" ? Number(req.body.section) : undefined;
+      const studentName = String(req.body?.studentName || "").trim() || undefined;
+      const studentNo = String(req.body?.studentNo || "").trim() || undefined;
+
+      const result = await storage.deleteAttendanceReportRecords(schoolId, {
+        startDate,
+        endDate,
+        gradeId,
+        sectionId,
+        studentName,
+        studentNo,
+      });
+
+      return res.json({
+        ok: true,
+        startDate,
+        endDate,
+        ...result,
+      });
     } catch (err: any) {
       return res.status(500).json({ message: err.message });
     }

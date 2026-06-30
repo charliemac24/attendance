@@ -39,6 +39,7 @@ export interface IStorage {
   // Schools
   getSchools(): Promise<School[]>;
   getSchool(id: number): Promise<School | undefined>;
+  getSchoolByLoginSlug(loginSlug: string): Promise<School | undefined>;
   createSchool(data: InsertSchool): Promise<School>;
   updateSchool(id: number, data: Partial<InsertSchool>): Promise<School | undefined>;
 
@@ -90,6 +91,7 @@ export interface IStorage {
 
   // Grade Levels
   getGradeLevels(schoolId: number): Promise<GradeLevel[]>;
+  getGradeLevel(id: number): Promise<GradeLevel | undefined>;
   createGradeLevel(data: InsertGradeLevel): Promise<GradeLevel>;
   updateGradeLevel(id: number, data: Partial<InsertGradeLevel>): Promise<GradeLevel | undefined>;
   deleteGradeLevel(id: number): Promise<void>;
@@ -112,6 +114,10 @@ export interface IStorage {
   createDailyAttendance(data: InsertDailyAttendance): Promise<DailyAttendance>;
   updateDailyAttendance(id: number, data: Partial<InsertDailyAttendance>): Promise<DailyAttendance | undefined>;
   deleteAttendanceById(schoolId: number, attendanceId: number): Promise<boolean>;
+  deleteAttendanceReportRecords(
+    schoolId: number,
+    filters: { startDate: string; endDate: string; gradeId?: number; sectionId?: number; studentName?: string; studentNo?: string },
+  ): Promise<{ attendanceEventsDeleted: number; dailyAttendancesDeleted: number }>;
   getAttendancesBySchoolAndDate(schoolId: number, date: string, status?: string): Promise<any[]>;
   getStudentsNotCheckedIn(schoolId: number, date: string, search?: string, gradeId?: number, sectionId?: number, page?: number, pageSize?: number, allowedSectionIds?: number[] | null): Promise<{ records: any[]; total: number }>;
 
@@ -125,11 +131,12 @@ export interface IStorage {
   updateSmsTemplate(id: number, data: Partial<InsertSmsTemplate>): Promise<SmsTemplate | undefined>;
 
   // SMS Logs
-  getSmsLogs(schoolId: number): Promise<any[]>;
+  getSmsLogs(schoolId: number, filters?: { from?: string; to?: string; limit?: number }): Promise<any[]>;
   createSmsLog(data: InsertSmsLog): Promise<SmsLog>;
-  purgeSchoolLogsByDate(
+  purgeSchoolLogsByDateRange(
     schoolId: number,
-    date: string,
+    from: string,
+    to: string,
     options?: { deleteAttendance?: boolean; deleteSms?: boolean },
   ): Promise<{ attendanceEventsDeleted: number; dailyAttendancesDeleted: number; smsLogsDeleted: number }>;
 
@@ -191,6 +198,11 @@ export class DatabaseStorage implements IStorage {
 
   async getSchool(id: number): Promise<School | undefined> {
     const [school] = await db.select().from(schools).where(eq(schools.id, id));
+    return school;
+  }
+
+  async getSchoolByLoginSlug(loginSlug: string): Promise<School | undefined> {
+    const [school] = await db.select().from(schools).where(eq(schools.loginSlug, loginSlug));
     return school;
   }
 
@@ -620,6 +632,11 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(gradeLevels).where(eq(gradeLevels.schoolId, schoolId));
   }
 
+  async getGradeLevel(id: number): Promise<GradeLevel | undefined> {
+    const [gradeLevel] = await db.select().from(gradeLevels).where(eq(gradeLevels.id, id));
+    return gradeLevel;
+  }
+
   async createGradeLevel(data: InsertGradeLevel): Promise<GradeLevel> {
     const [{ id }] = await db.insert(gradeLevels).values({
       ...data,
@@ -733,6 +750,50 @@ export class DatabaseStorage implements IStorage {
     await db.delete(attendanceEvents).where(eq(attendanceEvents.dailyAttendanceId, attendanceId));
     await db.delete(dailyAttendances).where(eq(dailyAttendances.id, attendanceId));
     return true;
+  }
+
+  async deleteAttendanceReportRecords(
+    schoolId: number,
+    filters: { startDate: string; endDate: string; gradeId?: number; sectionId?: number; studentName?: string; studentNo?: string },
+  ): Promise<{ attendanceEventsDeleted: number; dailyAttendancesDeleted: number }> {
+    const conditions: any[] = [
+      eq(dailyAttendances.schoolId, schoolId),
+      gte(dailyAttendances.date, filters.startDate),
+      lte(dailyAttendances.date, filters.endDate),
+    ];
+
+    if (filters.gradeId) conditions.push(eq(students.gradeLevelId, filters.gradeId));
+    if (filters.sectionId) conditions.push(eq(students.sectionId, filters.sectionId));
+    if (filters.studentName) {
+      conditions.push(
+        like(
+          sql<string>`LOWER(CONCAT(${students.firstName}, ' ', ${students.lastName}))`,
+          `%${filters.studentName.trim().toLowerCase()}%`,
+        ),
+      );
+    }
+    if (filters.studentNo) {
+      conditions.push(like(sql<string>`LOWER(${students.studentNo})`, `%${filters.studentNo.trim().toLowerCase()}%`));
+    }
+
+    const rows = await db
+      .select({ attendanceId: dailyAttendances.id })
+      .from(dailyAttendances)
+      .innerJoin(students, eq(dailyAttendances.studentId, students.id))
+      .where(and(...conditions));
+
+    const attendanceIds = rows.map((row) => row.attendanceId).filter((id): id is number => Number.isInteger(id));
+    if (attendanceIds.length === 0) {
+      return { attendanceEventsDeleted: 0, dailyAttendancesDeleted: 0 };
+    }
+
+    const deletedEvents: any = await db.delete(attendanceEvents).where(inArray(attendanceEvents.dailyAttendanceId, attendanceIds));
+    const deletedAttendances: any = await db.delete(dailyAttendances).where(inArray(dailyAttendances.id, attendanceIds));
+
+    return {
+      attendanceEventsDeleted: Number(deletedEvents?.rowsAffected ?? deletedEvents?.affectedRows ?? 0),
+      dailyAttendancesDeleted: Number(deletedAttendances?.rowsAffected ?? deletedAttendances?.affectedRows ?? 0),
+    };
   }
 
   async getAttendancesBySchoolAndDate(schoolId: number, date: string, status?: string | string[]): Promise<any[]> {
@@ -901,8 +962,21 @@ export class DatabaseStorage implements IStorage {
     return template;
   }
 
-  async getSmsLogs(schoolId: number): Promise<any[]> {
-    return db
+  async getSmsLogs(
+    schoolId: number,
+    filters: { from?: string; to?: string; limit?: number } = {},
+  ): Promise<any[]> {
+    const whereClauses = [eq(smsLogs.schoolId, schoolId)];
+
+    if (filters.from) {
+      whereClauses.push(gte(sql`DATE(${smsLogs.createdAt})`, filters.from));
+    }
+
+    if (filters.to) {
+      whereClauses.push(lte(sql`DATE(${smsLogs.createdAt})`, filters.to));
+    }
+
+    let query = db
       .select({
         id: smsLogs.id,
         schoolId: smsLogs.schoolId,
@@ -920,9 +994,14 @@ export class DatabaseStorage implements IStorage {
       })
       .from(smsLogs)
       .leftJoin(students, eq(smsLogs.studentId, students.id))
-      .where(eq(smsLogs.schoolId, schoolId))
-      .orderBy(desc(smsLogs.createdAt))
-      .limit(100);
+      .where(and(...whereClauses))
+      .orderBy(desc(smsLogs.createdAt));
+
+    if (filters.limit && filters.limit > 0) {
+      query = query.limit(filters.limit) as typeof query;
+    }
+
+    return query;
   }
 
   async createSmsLog(data: InsertSmsLog): Promise<SmsLog> {
@@ -931,9 +1010,10 @@ export class DatabaseStorage implements IStorage {
     return log!;
   }
 
-  async purgeSchoolLogsByDate(
+  async purgeSchoolLogsByDateRange(
     schoolId: number,
-    date: string,
+    from: string,
+    to: string,
     options: { deleteAttendance?: boolean; deleteSms?: boolean } = {},
   ): Promise<{ attendanceEventsDeleted: number; dailyAttendancesDeleted: number; smsLogsDeleted: number }> {
     const deleteAttendance = options.deleteAttendance !== false;
@@ -947,13 +1027,18 @@ export class DatabaseStorage implements IStorage {
       const deletedEvents: any = await db.delete(attendanceEvents).where(
         and(
           eq(attendanceEvents.schoolId, schoolId),
-          sql`DATE(${attendanceEvents.occurredAt}) = ${date}`,
+          gte(sql`DATE(${attendanceEvents.occurredAt})`, from),
+          lte(sql`DATE(${attendanceEvents.occurredAt})`, to),
         ),
       );
       attendanceEventsDeleted = Number(deletedEvents?.rowsAffected ?? deletedEvents?.affectedRows ?? 0);
 
       const deletedDailyAttendances: any = await db.delete(dailyAttendances).where(
-        and(eq(dailyAttendances.schoolId, schoolId), eq(dailyAttendances.date, date)),
+        and(
+          eq(dailyAttendances.schoolId, schoolId),
+          gte(dailyAttendances.date, from),
+          lte(dailyAttendances.date, to),
+        ),
       );
       dailyAttendancesDeleted = Number(deletedDailyAttendances?.rowsAffected ?? deletedDailyAttendances?.affectedRows ?? 0);
     }
@@ -962,7 +1047,8 @@ export class DatabaseStorage implements IStorage {
       const deletedSms: any = await db.delete(smsLogs).where(
         and(
           eq(smsLogs.schoolId, schoolId),
-          sql`DATE(${smsLogs.createdAt}) = ${date}`,
+          gte(sql`DATE(${smsLogs.createdAt})`, from),
+          lte(sql`DATE(${smsLogs.createdAt})`, to),
         ),
       );
       smsLogsDeleted = Number(deletedSms?.rowsAffected ?? deletedSms?.affectedRows ?? 0);

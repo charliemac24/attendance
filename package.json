@@ -14,6 +14,9 @@
     "docker:watch": "chokidar \"client/src/**\" \"server/**\" \"shared/**\" \"migrations/**\" \"package.json\" \"package-lock.json\" \"Dockerfile\" \"docker-compose.yml\" --ignore \"**/node_modules/**\" --ignore \"**/dist/**\" --ignore \"release/**\" --ignore \"uploads/**\" -c \"docker compose up -d --build app\""
   },
   "dependencies": {
+    "@capacitor/android": "^8.4.1",
+    "@capacitor/cli": "^7.6.7",
+    "@capacitor/core": "^8.4.1",
     "@hookform/resolvers": "^3.10.0",
     "@jridgewell/trace-mapping": "^0.3.25",
     "@radix-ui/react-accordion": "^1.2.4",

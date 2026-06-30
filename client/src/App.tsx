@@ -26,6 +26,7 @@ import SmsLogsPage from "@/pages/sms-logs";
 import SchoolsPage from "@/pages/schools";
 import ReportsPage from "@/pages/reports";
 import UsersPage from "@/pages/users";
+import MobileScannerPage from "@/pages/mobile-scanner";
 
 function AuthenticatedLayout() {
   const { user, isLoading } = useAuth();
@@ -108,6 +109,7 @@ function App() {
         <AuthProvider>
           <Switch>
             <Route path="/login" component={LoginPage} />
+            <Route path="/mobile/scanner" component={MobileScannerPage} />
             <Route>
               <AuthenticatedLayout />
             </Route>
