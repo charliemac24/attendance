@@ -11,6 +11,7 @@ import path from "path";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "./db";
 import { attendanceEvents, dailyAttendances, gradeLevels, schools, sections, smsLogs, students, type Student } from "@shared/schema";
+import { buildStudentQrToken } from "@shared/qr";
 
 const MemoryStore = createMemoryStore(session);
 const upload = multer({ storage: multer.memoryStorage() });
@@ -209,6 +210,24 @@ function mysqlDateTime(value: string) {
 
 function hasNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+async function ensureStudentQrTokenIsAvailable(
+  schoolId: number,
+  studentNo: unknown,
+  excludingStudentId?: number,
+): Promise<string> {
+  const qrToken = buildStudentQrToken(studentNo);
+  if (!qrToken) {
+    throw new Error("Student number is required.");
+  }
+
+  const existing = await storage.getStudentByQrToken(qrToken);
+  if (existing && (existing.schoolId !== schoolId || existing.id !== excludingStudentId)) {
+    throw new Error(`Student number ${qrToken} is already used as a QR token by another student.`);
+  }
+
+  return qrToken;
 }
 
 function parseScannedQrPayload(rawValue: unknown): {
@@ -1294,7 +1313,7 @@ export async function registerRoutes(
         gradeLevelId = selectedSection.gradeLevelId;
       }
 
-      const qrToken = randomBytes(16).toString("hex");
+      const qrToken = await ensureStudentQrTokenIsAvailable(schoolId, req.body.studentNo);
       const student = await storage.createStudent({
         ...req.body,
         schoolId,
@@ -1367,13 +1386,39 @@ export async function registerRoutes(
         gradeLevelId = selectedSection.gradeLevelId;
       }
 
+      const nextStudentNo =
+        req.body.studentNo === undefined ? existingStudent.studentNo : String(req.body.studentNo || "").trim();
+      const qrToken = await ensureStudentQrTokenIsAvailable(existingStudent.schoolId, nextStudentNo, existingStudent.id);
+
       const payload = {
         ...req.body,
+        studentNo: nextStudentNo,
+        qrToken,
         isActive: typeof req.body.isActive === "boolean" ? req.body.isActive : undefined,
         gradeLevelId,
         sectionId,
       };
       const student = await storage.updateStudent(Number(req.params.id), payload);
+      res.json(student);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/students/:id/regenerate-qr-token", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const existingStudent = await storage.getStudent(Number(req.params.id));
+      if (!existingStudent) {
+        return res.status(404).json({ message: "Student not found" });
+      }
+
+      const qrToken = await ensureStudentQrTokenIsAvailable(
+        existingStudent.schoolId,
+        existingStudent.studentNo,
+        existingStudent.id,
+      );
+
+      const student = await storage.updateStudent(existingStudent.id, { qrToken });
       res.json(student);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -2218,6 +2263,29 @@ export async function registerRoutes(
       };
       const school = await storage.updateSchool(schoolId, payload);
       res.json(school);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/settings/school/generate-student-qr-tokens", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(404).json({ message: "No school" });
+
+      const schoolStudents = await storage.getStudents(schoolId, undefined, "all");
+      for (const student of schoolStudents) {
+        const qrToken = buildStudentQrToken(student.studentNo);
+        const existing = await storage.getStudentByQrToken(qrToken);
+        if (existing && (existing.schoolId !== schoolId || existing.id !== student.id)) {
+          return res.status(400).json({
+            message: `Cannot generate QR tokens because student number ${student.studentNo} is already used by another student.`,
+          });
+        }
+      }
+
+      const result = await storage.syncSchoolStudentQrTokensToStudentNos(schoolId);
+      res.json(result);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }

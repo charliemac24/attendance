@@ -17,6 +17,7 @@ import {
   type SchoolHoliday, type InsertSchoolHoliday,
 } from "@shared/schema";
 import { getGradeLevelSortRank, normalizeGradeLevelName } from "@shared/grade-levels";
+import { buildStudentQrToken } from "@shared/qr";
 import bcrypt from "bcryptjs";
 import { randomBytes } from "crypto";
 
@@ -61,6 +62,7 @@ export interface IStorage {
   getStudentBySchoolAndStudentNo(schoolId: number, studentNo: string): Promise<Student | undefined>;
   getStudentBySchoolAndId(schoolId: number, studentId: number): Promise<Student | undefined>;
   getActiveStudents(schoolId: number): Promise<Student[]>;
+  syncSchoolStudentQrTokensToStudentNos(schoolId: number): Promise<{ updated: number }>;
   createStudent(data: InsertStudent): Promise<Student>;
   updateStudent(id: number, data: Partial<InsertStudent>): Promise<Student | undefined>;
   deleteStudent(id: number): Promise<void>;
@@ -377,6 +379,32 @@ export class DatabaseStorage implements IStorage {
     );
   }
 
+  async syncSchoolStudentQrTokensToStudentNos(schoolId: number): Promise<{ updated: number }> {
+    const schoolStudents = await db
+      .select({
+        id: students.id,
+        studentNo: students.studentNo,
+      })
+      .from(students)
+      .where(eq(students.schoolId, schoolId));
+
+    for (const student of schoolStudents) {
+      await db
+        .update(students)
+        .set({ qrToken: `tmp:${schoolId}:${student.id}` })
+        .where(eq(students.id, student.id));
+    }
+
+    for (const student of schoolStudents) {
+      await db
+        .update(students)
+        .set({ qrToken: buildStudentQrToken(student.studentNo) })
+        .where(eq(students.id, student.id));
+    }
+
+    return { updated: schoolStudents.length };
+  }
+
   async createStudent(data: InsertStudent): Promise<Student> {
     const [{ id }] = await db.insert(students).values(data).$returningId();
     const [student] = await db.select().from(students).where(eq(students.id, id));
@@ -400,13 +428,16 @@ export class DatabaseStorage implements IStorage {
     const existing = await db.select().from(students).where(
       and(eq(students.schoolId, schoolId), eq(students.studentNo, studentNo))
     );
+    const qrToken = buildStudentQrToken(studentNo);
 
     if (existing.length > 0) {
-      await db.update(students).set(data).where(eq(students.id, existing[0].id));
+      await db.update(students).set({
+        ...data,
+        qrToken,
+      }).where(eq(students.id, existing[0].id));
       const [updated] = await db.select().from(students).where(eq(students.id, existing[0].id));
       return { ...updated, wasUpdate: true };
     } else {
-      const qrToken = randomBytes(16).toString("hex");
       const [{ id }] = await db.insert(students).values({
         schoolId,
         studentNo,
@@ -1601,12 +1632,13 @@ export class DatabaseStorage implements IStorage {
       const gradeIdx = Math.floor(i / 5) % createdGrades.length;
       const sectionIdx = i < createdSections.length ? i % createdSections.length : 0;
 
-      const qrToken = randomBytes(16).toString("hex");
+      const studentNo = `2025-${String(i + 1).padStart(3, "0")}`;
+      const qrToken = buildStudentQrToken(studentNo);
       const phone = `6391${String(7000000 + i).padStart(7, "0")}`;
 
       await db.insert(students).values({
         schoolId: school.id,
-        studentNo: `2025-${String(i + 1).padStart(3, "0")}`,
+        studentNo,
         firstName: firstNames[i],
         lastName: lastNames[i],
         gradeLevelId: createdGrades[gradeIdx].id,

@@ -17,7 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { localIsoDate } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
-import { Plus, Search, Edit, Users, Trash2, Printer, X, UserX, CheckCircle2, ArrowUpCircle, Layers } from "lucide-react";
+import { Plus, Search, Edit, Users, Trash2, Printer, X, UserX, CheckCircle2, ArrowUpCircle, Layers, RefreshCw } from "lucide-react";
 import { getGradeLevelSortRank, normalizeGradeLevelName } from "@shared/grade-levels";
 import QRCode from "qrcode";
 import type { Student, GradeLevel, Section } from "@shared/schema";
@@ -350,6 +350,23 @@ export function StudentsPage({ roster = "active" }: StudentsPageProps) {
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const regenerateQrTokenMutation = useMutation({
+    mutationFn: async (student: StudentWithRelations) => {
+      const res = await apiRequest("POST", `/api/students/${student.id}/regenerate-qr-token`);
+      return res.json();
+    },
+    onSuccess: (_data, student) => {
+      toast({
+        title: "QR token regenerated",
+        description: `${student.firstName} ${student.lastName} now uses student number ${student.studentNo} as QR token.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/students"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "Regeneration failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -761,6 +778,22 @@ const openEdit = (student: StudentWithRelations) => {
                                 title="Print student QR"
                               >
                                 <Printer className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                disabled={regenerateQrTokenMutation.isPending}
+                                onClick={() => {
+                                  const ok = window.confirm(
+                                    `Regenerate ${student.firstName} ${student.lastName}'s QR token from student number ${student.studentNo}? Old printed QR codes for this student may stop working.`,
+                                  );
+                                  if (!ok) return;
+                                  regenerateQrTokenMutation.mutate(student);
+                                }}
+                                data-testid={`button-regenerate-student-qr-${student.id}`}
+                                title="Regenerate student QR token"
+                              >
+                                <RefreshCw className="h-4 w-4" />
                               </Button>
                               <Button
                                 variant="ghost"

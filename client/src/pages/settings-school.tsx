@@ -77,6 +77,23 @@ export default function SettingsSchoolPage() {
     },
   });
 
+  const generateStudentQrTokensMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/settings/school/generate-student-qr-tokens", {});
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      toast({
+        title: "QR tokens generated",
+        description: `Updated ${data.updated} students to use their student number as QR token.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/students"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "Generation failed", description: err.message, variant: "destructive" });
+    },
+  });
+
   const purgeLogsMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/settings/purge-logs", {
@@ -292,6 +309,36 @@ export default function SettingsSchoolPage() {
               {saveMutation.isPending ? "Saving..." : "Save Settings"}
             </Button>
           </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <h2 className="text-base font-semibold">Student QR Tokens</h2>
+          <p className="text-sm text-muted-foreground">
+            Generate QR tokens for all students in this school using their student number.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            This will update all current students so their QR token matches their <span className="font-mono">student_no</span>.
+            Existing printed QR codes may stop working after regeneration.
+          </p>
+          <Button
+            type="button"
+            disabled={generateStudentQrTokensMutation.isPending}
+            data-testid="button-generate-student-qr-tokens"
+            onClick={() => {
+              if (!school) return;
+              const ok = window.confirm(
+                `Generate QR tokens for all students in ${school.name} using their student numbers? Old printed QR codes may stop working.`,
+              );
+              if (!ok) return;
+              generateStudentQrTokensMutation.mutate();
+            }}
+          >
+            {generateStudentQrTokensMutation.isPending ? "Generating..." : "Generate QR Codes From Student Numbers"}
+          </Button>
         </CardContent>
       </Card>
 
