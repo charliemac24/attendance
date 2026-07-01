@@ -2986,8 +2986,8 @@ export async function registerRoutes(
             sentCount: sent,
             monthlySmsCredits: credits,
             excessCount: excess,
-            smsOverageRatePhp: (rateCents / 100).toFixed(2),
-            amountDuePhp: (excess * rateCents / 100).toFixed(2),
+            overageRatePhp: (rateCents / 100).toFixed(2),
+            overageAmountPhp: (excess * rateCents / 100).toFixed(2),
           };
         });
       } else {

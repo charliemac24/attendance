@@ -308,9 +308,9 @@ function SmsBillingTable({ data }: { data: SmsBillingRecord[] }) {
             <th className="text-left py-3 px-4 font-medium">School</th>
             <th className="text-center py-3 px-4 font-medium">Sent SMS</th>
             <th className="text-center py-3 px-4 font-medium">Included Credits</th>
-            <th className="text-center py-3 px-4 font-medium">Excess</th>
-            <th className="text-center py-3 px-4 font-medium">Rate</th>
-            <th className="text-right py-3 px-4 font-medium">Amount Due</th>
+            <th className="text-center py-3 px-4 font-medium">Excess SMS</th>
+            <th className="text-center py-3 px-4 font-medium">Overage Rate</th>
+            <th className="text-right py-3 px-4 font-medium">Overage Amount</th>
           </tr>
         </thead>
         <tbody>
