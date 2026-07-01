@@ -32,6 +32,7 @@ type PrintableStudent = {
   lastName: string;
   studentNo: string;
   qrToken: string;
+  gradeLevelName?: string;
 };
 
 type StudentsPageProps = {
@@ -74,6 +75,7 @@ async function toPrintableItems(students: PrintableStudent[]) {
     students.map(async (student) => ({
       fullName: `${student.firstName} ${student.lastName}`,
       studentNo: student.studentNo,
+      gradeLevelName: formatGradeLevel(student.gradeLevelName),
       qrDataUrl: await QRCode.toDataURL(student.qrToken, {
         width: 320,
         margin: 3,
@@ -107,9 +109,9 @@ function openPrintWindowShell(title: string): Window {
 function renderPrintWindow(
   printWindow: Window,
   title: string,
-  items: Array<{ fullName: string; studentNo: string; qrDataUrl: string }>,
+  items: Array<{ fullName: string; studentNo: string; gradeLevelName: string; qrDataUrl: string }>,
 ) {
-  const pageSize = 9;
+  const pageSize = 12;
   const pages: string[] = [];
 
   for (let i = 0; i < items.length; i += pageSize) {
@@ -121,6 +123,7 @@ function renderPrintWindow(
         <img src="${item.qrDataUrl}" alt="QR code for ${escapeHtml(item.fullName)}" />
         <div class="name">${escapeHtml(item.fullName)}</div>
         <div class="id">ID: ${escapeHtml(item.studentNo)}</div>
+        <div class="grade">${escapeHtml(item.gradeLevelName)}</div>
       </div>
     `,
       )
@@ -163,9 +166,9 @@ function renderPrintWindow(
           .subtitle { font-size: 11px; color: #555; margin: 3px 0 0; }
           .grid {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: repeat(4, minmax(0, 1fr));
             grid-template-rows: repeat(3, 1fr);
-            gap: 5mm;
+            gap: 4mm;
             padding: 0 3mm;
             height: calc(297mm - 16mm - 16mm);
             box-sizing: border-box;
@@ -173,7 +176,7 @@ function renderPrintWindow(
           .card {
             border: 1px solid #ddd;
             border-radius: 8px;
-            padding: 4mm 3mm;
+            padding: 3mm 2.5mm;
             text-align: center;
             display: flex;
             flex-direction: column;
@@ -182,15 +185,16 @@ function renderPrintWindow(
             box-sizing: border-box;
             overflow: hidden;
           }
-          .card img { width: 42mm; height: 42mm; display: block; margin: 0 auto 4mm; flex: 0 0 auto; image-rendering: pixelated; }
+          .card img { width: 33mm; height: 33mm; display: block; margin: 0 auto 3mm; flex: 0 0 auto; image-rendering: pixelated; }
           .name {
-            font-size: 11px;
+            font-size: 10px;
             font-weight: 600;
             line-height: 1.2;
             margin-bottom: 2px;
             word-break: break-word;
           }
-          .id { font-size: 10px; color: #444; line-height: 1.2; }
+          .id { font-size: 9px; color: #444; line-height: 1.2; }
+          .grade { font-size: 9px; color: #444; line-height: 1.2; margin-top: 2px; }
         </style>
       </head>
       <body>
@@ -599,6 +603,7 @@ const openEdit = (student: StudentWithRelations) => {
                   lastName: s.lastName,
                   studentNo: s.studentNo,
                   qrToken: s.qrToken,
+                  gradeLevelName: s.gradeLevelName,
                 })),
                 printTitle,
               )
@@ -768,6 +773,7 @@ const openEdit = (student: StudentWithRelations) => {
                                         lastName: student.lastName,
                                         studentNo: student.studentNo,
                                         qrToken: student.qrToken,
+                                        gradeLevelName: student.gradeLevelName,
                                       },
                                     ],
                                     `Student QR Code - ${student.firstName} ${student.lastName}`,
