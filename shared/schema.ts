@@ -307,11 +307,20 @@ export const smsNotifications = mysqlTable(
     toPhone: varchar("to_phone", { length: 32 }),
     message: text("message").notNull(),
     status: varchar("status", { length: 32 }).notNull().default("queued"),
+    smsLogId: int("sms_log_id").references(() => smsLogs.id),
+    attemptCount: int("attempt_count").notNull().default(0),
+    nextAttemptAt: datetime("next_attempt_at"),
+    lastAttemptAt: datetime("last_attempt_at"),
+    lastHttpStatus: int("last_http_status"),
+    providerStatus: varchar("provider_status", { length: 32 }),
     providerMessageId: varchar("provider_message_id", { length: 191 }),
     providerResponse: json("provider_response"),
+    processingError: text("processing_error"),
+    lockedAt: datetime("locked_at"),
     errorMessage: text("error_message"),
     sentAt: datetime("sent_at"),
     createdAt: datetime("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: datetime("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
     index("sms_notifications_school_created_idx").on(
@@ -319,6 +328,7 @@ export const smsNotifications = mysqlTable(
       table.createdAt
     ),
     index("sms_notifications_school_status_idx").on(table.schoolId, table.status),
+    index("sms_notifications_status_next_attempt_idx").on(table.status, table.nextAttemptAt),
     index("sms_notifications_student_idx").on(table.studentId),
   ]
 );

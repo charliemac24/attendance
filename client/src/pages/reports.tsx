@@ -33,6 +33,8 @@ interface SmsUsageRecord {
   sent: number;
   failed: number;
   queued: number;
+  submitted: number;
+  retryWait: number;
 }
 
 interface SmsBillingRecord {
@@ -438,7 +440,9 @@ function SmsUsageTable({ data }: { data: SmsUsageRecord[] }) {
             <th className="text-center py-3 px-4 font-medium">Total</th>
             <th className="text-center py-3 px-4 font-medium">Sent</th>
             <th className="text-center py-3 px-4 font-medium">Failed</th>
+            <th className="text-center py-3 px-4 font-medium">Submitted</th>
             <th className="text-center py-3 px-4 font-medium">Queued</th>
+            <th className="text-center py-3 px-4 font-medium">Retry Wait</th>
           </tr>
         </thead>
         <tbody>
@@ -448,7 +452,9 @@ function SmsUsageTable({ data }: { data: SmsUsageRecord[] }) {
               <td className="py-3 px-4 text-center">{r.total}</td>
               <td className="py-3 px-4 text-center text-green-600 dark:text-green-400">{r.sent}</td>
               <td className="py-3 px-4 text-center text-red-600 dark:text-red-400">{r.failed}</td>
+              <td className="py-3 px-4 text-center text-blue-600 dark:text-blue-400">{r.submitted}</td>
               <td className="py-3 px-4 text-center text-muted-foreground">{r.queued}</td>
+              <td className="py-3 px-4 text-center text-amber-600 dark:text-amber-400">{r.retryWait}</td>
             </tr>
           ))}
         </tbody>

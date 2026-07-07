@@ -12,6 +12,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "./db";
 import { attendanceEvents, dailyAttendances, gradeLevels, schools, sections, smsLogs, students, type Student } from "@shared/schema";
 import { buildStudentQrToken } from "@shared/qr";
+import { formatDateTimeInTimezone } from "./datetime";
 
 const MemoryStore = createMemoryStore(session);
 const upload = multer({ storage: multer.memoryStorage() });
@@ -20,6 +21,14 @@ const photoUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 const recentScanAtByStudent = new Map<number, number>();
+const SMS_PROCESS_BATCH_SIZE = 10;
+const SMS_RECONCILE_BATCH_SIZE = 100;
+const SMS_SEND_SPACING_MS = 400;
+const SMS_MAX_RETRY_ATTEMPTS = 3;
+const SMS_NETWORK_DUPLICATE_LOOKBACK_DAYS = 1;
+const SMS_NOTIFICATION_EXPIRY_HOURS = 24;
+const SMS_PENDING_QUEUE_STATUSES = ["queued", "retry_wait", "processing"] as const;
+const DEFAULT_CRON_SECRET = "attendance-cron-a7k9m2x4p8q1";
 
 declare module "express-session" {
   interface SessionData {
@@ -115,6 +124,10 @@ function renderSmsTemplate(template: string, variables: Record<string, string>):
   });
 }
 
+function getCronSecret(): string {
+  return String(process.env.CRON_SECRET || DEFAULT_CRON_SECRET).trim();
+}
+
 function getTodayIsoInTimezone(timezone?: string): string {
   const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   return new Intl.DateTimeFormat("en-CA", {
@@ -133,25 +146,6 @@ function formatIsoInTimezone(date: Date, timezone?: string): string {
     month: "2-digit",
     day: "2-digit",
   }).format(date);
-}
-
-function formatDateTimeInTimezone(date: Date, timezone?: string): string {
-  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-    hourCycle: "h23",
-  }).formatToParts(date);
-
-  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "00";
-  const hour = get("hour") === "24" ? "00" : get("hour");
-  return `${get("year")}-${get("month")}-${get("day")} ${hour}:${get("minute")}:${get("second")}`;
 }
 
 function formatDatabaseDateTime(value: Date | string | null | undefined): string | null {
@@ -364,6 +358,89 @@ function csvCell(value: unknown): string {
   return `"${String(value ?? "").replace(/"/g, '""')}"`;
 }
 
+class SemaphoreRequestError extends Error {
+  httpStatus: number | null;
+  providerResponse: any;
+  retryAfterSeconds: number | null;
+  shouldRetry: boolean;
+  kind: "network" | "rate_limit" | "auth" | "bad_request" | "business" | "unknown";
+  causeMessage: string | null;
+
+  constructor(params: {
+    message: string;
+    httpStatus?: number | null;
+    providerResponse?: any;
+    retryAfterSeconds?: number | null;
+    shouldRetry?: boolean;
+    kind: "network" | "rate_limit" | "auth" | "bad_request" | "business" | "unknown";
+    causeMessage?: string | null;
+  }) {
+    super(params.message);
+    this.name = "SemaphoreRequestError";
+    this.httpStatus = params.httpStatus ?? null;
+    this.providerResponse = params.providerResponse ?? null;
+    this.retryAfterSeconds = params.retryAfterSeconds ?? null;
+    this.shouldRetry = params.shouldRetry ?? false;
+    this.kind = params.kind;
+    this.causeMessage = params.causeMessage ?? null;
+  }
+}
+
+type AttendanceSmsTemplateType =
+  | "check_in"
+  | "check_out"
+  | "out_final"
+  | "break_out"
+  | "break_in"
+  | "early_out"
+  | "late"
+  | "absent";
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getHeaderInt(headers: Headers, key: string): number | null {
+  const raw = headers.get(key);
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function summarizeProviderError(providerResponse: any): string {
+  if (typeof providerResponse === "string" && providerResponse.trim()) return providerResponse.trim();
+  if (Array.isArray(providerResponse) && providerResponse.length > 0) {
+    const parts = providerResponse.flatMap((entry) => {
+      if (typeof entry === "string" && entry.trim()) return [entry.trim()];
+      if (entry && typeof entry === "object") {
+        return Object.entries(entry)
+          .map(([key, value]) => {
+            if (typeof value === "string" && value.trim()) return `${key}: ${value.trim()}`;
+            return null;
+          })
+          .filter(Boolean) as string[];
+      }
+      return [];
+    });
+    if (parts.length > 0) return parts.join("; ");
+  }
+  if (providerResponse && typeof providerResponse === "object") {
+    const maybeMessage = [providerResponse.error, providerResponse.message]
+      .find((value) => typeof value === "string" && value.trim());
+    if (typeof maybeMessage === "string") return maybeMessage.trim();
+  }
+  return "Unknown provider error";
+}
+
+function extractFetchCauseMessage(err: any): string | null {
+  const cause = err?.cause;
+  if (!cause) return null;
+  if (typeof cause === "string" && cause.trim()) return cause.trim();
+  if (typeof cause?.message === "string" && cause.message.trim()) return cause.message.trim();
+  if (typeof cause?.code === "string" && cause.code.trim()) return cause.code.trim();
+  return null;
+}
+
 async function sendSemaphoreMessage(apiKey: string, senderName: string | null, toPhone: string, message: string) {
   const form = new URLSearchParams();
   form.set("apikey", apiKey);
@@ -373,11 +450,21 @@ async function sendSemaphoreMessage(apiKey: string, senderName: string | null, t
     form.set("sendername", senderName);
   }
 
-  const response = await fetch("https://api.semaphore.co/api/v4/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: form.toString(),
-  });
+  let response: globalThis.Response;
+  try {
+    response = await fetch("https://api.semaphore.co/api/v4/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+  } catch (err: any) {
+    throw new SemaphoreRequestError({
+      message: err?.message || "Failed to reach Semaphore",
+      shouldRetry: true,
+      kind: "network",
+      causeMessage: extractFetchCauseMessage(err),
+    });
+  }
 
   const rawText = await response.text();
   let parsed: any = null;
@@ -388,19 +475,61 @@ async function sendSemaphoreMessage(apiKey: string, senderName: string | null, t
   }
 
   if (!response.ok) {
-    const err = new Error(`Semaphore request failed (${response.status})`);
-    (err as any).providerResponse = parsed;
-    throw err;
+    const retryAfterSeconds = getHeaderInt(response.headers, "Retry-After");
+    const providerMessage = summarizeProviderError(parsed);
+    if (response.status === 429) {
+      throw new SemaphoreRequestError({
+        message: `Semaphore rate limited request (${response.status})`,
+        httpStatus: response.status,
+        providerResponse: parsed,
+        retryAfterSeconds,
+        shouldRetry: true,
+        kind: "rate_limit",
+      });
+    }
+    if (response.status === 401) {
+      throw new SemaphoreRequestError({
+        message: `Semaphore authentication failed (${response.status})`,
+        httpStatus: response.status,
+        providerResponse: parsed,
+        shouldRetry: false,
+        kind: "auth",
+      });
+    }
+    if (response.status === 400) {
+      throw new SemaphoreRequestError({
+        message: `Semaphore rejected request: ${providerMessage}`,
+        httpStatus: response.status,
+        providerResponse: parsed,
+        shouldRetry: false,
+        kind: "bad_request",
+      });
+    }
+    if (response.status >= 500 && Array.isArray(parsed)) {
+      throw new SemaphoreRequestError({
+        message: `Semaphore business error: ${providerMessage}`,
+        httpStatus: response.status,
+        providerResponse: parsed,
+        shouldRetry: false,
+        kind: "business",
+      });
+    }
+    throw new SemaphoreRequestError({
+      message: `Semaphore request failed (${response.status})`,
+      httpStatus: response.status,
+      providerResponse: parsed,
+      shouldRetry: false,
+      kind: "unknown",
+    });
   }
 
-  const failureReason = getSemaphoreFailureReason(parsed);
-  if (failureReason) {
-    const err = new Error(`Semaphore rejected message: ${failureReason}`);
-    (err as any).providerResponse = parsed;
-    throw err;
-  }
-
-  return parsed;
+  return {
+    providerResponse: parsed,
+    providerMessageId: getSemaphoreMessageId(parsed),
+    providerStatus: getSemaphoreProviderStatus(parsed),
+    rateLimitRemaining: getHeaderInt(response.headers, "X-RateLimit-Remaining"),
+    rateLimitLimit: getHeaderInt(response.headers, "X-RateLimit-Limit"),
+  };
 }
 
 function getSemaphoreMessageId(providerResponse: any): string | null {
@@ -408,30 +537,89 @@ function getSemaphoreMessageId(providerResponse: any): string | null {
   return first?.message_id || first?.id || null;
 }
 
-function getSemaphoreFailureReason(providerResponse: any): string | null {
-  if (!providerResponse) return "Empty response from Semaphore";
-  if (typeof providerResponse === "string") {
-    const s = providerResponse.toLowerCase();
-    if (s.includes("error") || s.includes("invalid") || s.includes("failed") || s.includes("unauthorized")) {
-      return providerResponse;
-    }
-    return null;
-  }
-
+function getSemaphoreProviderStatus(providerResponse: any): string | null {
   const first = Array.isArray(providerResponse) ? providerResponse[0] : providerResponse;
-  if (!first) return "Empty response payload from Semaphore";
+  if (!first?.status) return null;
+  return String(first.status).trim() || null;
+}
 
-  if (typeof first.error === "string" && first.error.trim()) return first.error;
-  if (typeof first.message === "string" && /invalid|unauthorized|failed|reject/i.test(first.message)) {
-    return first.message;
+function mapSemaphoreDeliveryStatus(providerStatus: string | null): "submitted" | "sent" | "failed" {
+  const normalized = String(providerStatus || "").trim().toLowerCase();
+  if (!normalized || normalized === "pending" || normalized === "queued") return "submitted";
+  if (normalized === "sent") return "sent";
+  if (normalized === "failed" || normalized === "refunded") return "failed";
+  return "submitted";
+}
+
+function getRetryDelaySeconds(attemptCount: number, retryAfterSeconds?: number | null): number {
+  if (retryAfterSeconds && retryAfterSeconds > 0) return retryAfterSeconds;
+  if (attemptCount <= 1) return 60;
+  if (attemptCount === 2) return 5 * 60;
+  return 15 * 60;
+}
+
+function buildDateShiftedIso(offsetDays: number): string {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+}
+
+async function getSemaphoreMessages(apiKey: string, params: {
+  limit?: number;
+  page?: number;
+  startDate?: string;
+  endDate?: string;
+}) {
+  let response: globalThis.Response;
+  try {
+    const url = new URL("https://api.semaphore.co/api/v4/messages");
+    url.searchParams.set("apikey", apiKey);
+    if (params.limit) url.searchParams.set("limit", String(params.limit));
+    if (params.page) url.searchParams.set("page", String(params.page));
+    if (params.startDate) url.searchParams.set("startDate", params.startDate);
+    if (params.endDate) url.searchParams.set("endDate", params.endDate);
+    response = await fetch(url.toString(), { method: "GET" });
+  } catch (err: any) {
+    throw new SemaphoreRequestError({
+      message: err?.message || "Failed to query Semaphore messages",
+      shouldRetry: false,
+      kind: "network",
+      causeMessage: extractFetchCauseMessage(err),
+    });
   }
 
-  const providerStatus = String(first.status ?? "");
-  if (providerStatus && /failed|reject|invalid|error|undeliver/i.test(providerStatus)) {
-    return `Provider status: ${providerStatus}`;
+  const rawText = await response.text();
+  let parsed: any = null;
+  try {
+    parsed = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    parsed = rawText;
   }
 
-  return null;
+  if (!response.ok) {
+    throw new SemaphoreRequestError({
+      message: `Semaphore retrieve messages failed (${response.status})`,
+      httpStatus: response.status,
+      providerResponse: parsed,
+      shouldRetry: false,
+      kind: "unknown",
+    });
+  }
+
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+async function findMatchingSemaphoreMessage(apiKey: string, toPhone: string, message: string) {
+  const recentMessages = await getSemaphoreMessages(apiKey, {
+    limit: 200,
+    startDate: buildDateShiftedIso(-SMS_NETWORK_DUPLICATE_LOOKBACK_DAYS),
+    endDate: buildDateShiftedIso(0),
+  });
+
+  return recentMessages.find((entry: any) => {
+    const recipient = normalizePhone(String(entry?.recipient || ""));
+    return recipient === toPhone && String(entry?.message || "") === message;
+  }) ?? null;
 }
 
 async function createSkippedSmsLog(params: {
@@ -521,19 +709,12 @@ async function getLastEventForAttendance(dailyAttendanceId: number) {
 async function maybeSendAttendanceSms(args: {
   school: any;
   student: any;
-  templateType:
-    | "check_in"
-    | "check_out"
-    | "out_final"
-    | "break_out"
-    | "break_in"
-    | "early_out"
-    | "late"
-    | "absent";
+  dailyAttendanceId?: number | null;
+  templateType: AttendanceSmsTemplateType;
   eventTime: Date | string;
   status: string;
 }) {
-  const { school, student, templateType, eventTime, status } = args;
+  const { school, student, dailyAttendanceId, templateType, eventTime, status } = args;
   if (!school?.id || !student?.id) return;
   if (!student.isActive) {
     await createSkippedSmsLog({
@@ -630,48 +811,374 @@ async function maybeSendAttendanceSms(args: {
   });
 
   try {
-    const providerResponse = await sendSemaphoreMessage(
-      school.semaphoreApiKey,
-      school.semaphoreSenderName || null,
-      toPhone,
-      message,
-    );
-    const providerMessageId = getSemaphoreMessageId(providerResponse);
-
-    await storage.createSmsLog({
+    const smsLog = await storage.createSmsLog({
       schoolId: school.id,
       studentId: student.id,
       templateType: selectedTemplateType,
       toPhone,
       message,
-      status: "sent",
-      providerMessageId,
-      providerResponse,
-      sentAt: new Date(),
+      status: "queued",
+      providerMessageId: null,
+      providerResponse: null,
+      sentAt: null,
       errorMessage: null,
     });
-  } catch (err: any) {
-    await storage.createSmsLog({
+
+    await storage.createSmsNotification({
       schoolId: school.id,
       studentId: student.id,
+      dailyAttendanceId: dailyAttendanceId ?? null,
       templateType: selectedTemplateType,
+      smsMode: null,
+      recipientsMode: "PRIMARY_ONLY",
+      recipientCount: 1,
       toPhone,
       message,
-      status: "failed",
+      status: "queued",
+      smsLogId: smsLog.id,
+      attemptCount: 0,
+      nextAttemptAt: new Date(),
+      lastAttemptAt: null,
+      lastHttpStatus: null,
+      providerStatus: null,
       providerMessageId: null,
-      providerResponse: err?.providerResponse ?? null,
+      providerResponse: null,
+      processingError: null,
+      lockedAt: null,
+      errorMessage: null,
       sentAt: null,
-      errorMessage: err?.message || "Failed to send SMS",
+      updatedAt: new Date(),
     });
-    console.error("SMS send failed", {
+  } catch (err: any) {
+    console.error("SMS enqueue failed", {
       schoolId: school.id,
       studentId: student.id,
       templateType,
       toPhone,
       error: err?.message || String(err),
-      providerResponse: err?.providerResponse ?? null,
     });
   }
+}
+
+async function updateNotificationLogAndState(
+  notification: any,
+  data: Record<string, any>,
+) {
+  const notificationPatch = {
+    ...data,
+    updatedAt: data.updatedAt ?? new Date(),
+  };
+  await storage.updateSmsNotification(notification.id, notificationPatch);
+
+  if (notification.smsLogId) {
+    await storage.updateSmsLog(notification.smsLogId, {
+      status: data.status,
+      providerMessageId: data.providerMessageId ?? null,
+      providerResponse: data.providerResponse ?? null,
+      sentAt: data.sentAt ?? null,
+      errorMessage: data.errorMessage ?? data.processingError ?? null,
+      templateType: notification.templateType,
+      toPhone: notification.toPhone ?? "N/A",
+      message: notification.message,
+      schoolId: notification.schoolId,
+      studentId: notification.studentId ?? null,
+    });
+  }
+}
+
+async function processSmsNotification(notification: any) {
+  const now = new Date();
+  const attemptCount = Number(notification.attemptCount || 0) + 1;
+  try {
+    const school = await storage.getSchool(notification.schoolId);
+
+    if (!school) {
+      await updateNotificationLogAndState(notification, {
+        status: "failed",
+        attemptCount,
+        lastAttemptAt: now,
+        lastHttpStatus: null,
+        processingError: "School not found",
+        errorMessage: "School not found",
+        lockedAt: null,
+        sentAt: null,
+      });
+      return { id: notification.id, status: "failed", reason: "school_not_found" };
+    }
+
+    if (!school.smsEnabled) {
+      await updateNotificationLogAndState(notification, {
+        status: "failed",
+        attemptCount,
+        lastAttemptAt: now,
+        lastHttpStatus: null,
+        processingError: "SMS is disabled in school settings",
+        errorMessage: "SMS is disabled in school settings",
+        lockedAt: null,
+        sentAt: null,
+      });
+      return { id: notification.id, status: "failed", reason: "sms_disabled" };
+    }
+
+    if (school.smsProvider !== "semaphore") {
+      await updateNotificationLogAndState(notification, {
+        status: "failed",
+        attemptCount,
+        lastAttemptAt: now,
+        lastHttpStatus: null,
+        processingError: `Unsupported SMS provider: ${school.smsProvider}`,
+        errorMessage: `Unsupported SMS provider: ${school.smsProvider}`,
+        lockedAt: null,
+        sentAt: null,
+      });
+      return { id: notification.id, status: "failed", reason: "unsupported_provider" };
+    }
+
+    if (!hasNonEmptyString(school.semaphoreApiKey)) {
+      await updateNotificationLogAndState(notification, {
+        status: "failed",
+        attemptCount,
+        lastAttemptAt: now,
+        lastHttpStatus: null,
+        processingError: "Missing Semaphore API key",
+        errorMessage: "Missing Semaphore API key",
+        lockedAt: null,
+        sentAt: null,
+      });
+      return { id: notification.id, status: "failed", reason: "missing_api_key" };
+    }
+
+    await storage.updateSmsNotification(notification.id, {
+      attemptCount,
+      lastAttemptAt: now,
+      processingError: null,
+      errorMessage: null,
+      lockedAt: now,
+      updatedAt: now,
+    });
+
+    try {
+      const result = await sendSemaphoreMessage(
+        school.semaphoreApiKey,
+        school.semaphoreSenderName || null,
+        String(notification.toPhone || ""),
+        notification.message,
+      );
+      const localStatus = mapSemaphoreDeliveryStatus(result.providerStatus);
+      const sentAt = localStatus === "sent" ? now : null;
+
+      await updateNotificationLogAndState(notification, {
+        status: localStatus,
+        lastHttpStatus: 200,
+        providerStatus: result.providerStatus,
+        providerMessageId: result.providerMessageId,
+        providerResponse: result.providerResponse,
+        processingError: null,
+        errorMessage: null,
+        lockedAt: null,
+        sentAt,
+      });
+
+      return { id: notification.id, status: localStatus, providerStatus: result.providerStatus };
+    } catch (err: any) {
+      if (err instanceof SemaphoreRequestError && err.kind === "network") {
+        try {
+          const duplicate = await findMatchingSemaphoreMessage(
+            school.semaphoreApiKey,
+            String(notification.toPhone || ""),
+            notification.message,
+          );
+          if (duplicate) {
+            const providerStatus = getSemaphoreProviderStatus(duplicate);
+            const localStatus = mapSemaphoreDeliveryStatus(providerStatus);
+            await updateNotificationLogAndState(notification, {
+              status: localStatus,
+              lastHttpStatus: null,
+              providerStatus,
+              providerMessageId: getSemaphoreMessageId(duplicate),
+              providerResponse: duplicate,
+              processingError: err.causeMessage || err.message,
+              errorMessage: null,
+              lockedAt: null,
+              sentAt: localStatus === "sent" ? now : null,
+            });
+            return { id: notification.id, status: localStatus, deduped: true };
+          }
+        } catch (lookupErr: any) {
+          console.error("Semaphore duplicate lookup failed", {
+            notificationId: notification.id,
+            error: lookupErr?.message || String(lookupErr),
+          });
+        }
+      }
+
+      const shouldRetry = err instanceof SemaphoreRequestError
+        && err.shouldRetry
+        && attemptCount < SMS_MAX_RETRY_ATTEMPTS;
+
+      if (shouldRetry) {
+        const retryDelaySeconds = getRetryDelaySeconds(attemptCount, err.retryAfterSeconds);
+        const nextAttemptAt = new Date(now.getTime() + (retryDelaySeconds * 1000));
+        await updateNotificationLogAndState(notification, {
+          status: "retry_wait",
+          nextAttemptAt,
+          lastHttpStatus: err.httpStatus,
+          providerResponse: err.providerResponse ?? null,
+          processingError: err.causeMessage || err.message,
+          errorMessage: err.message,
+          lockedAt: null,
+          sentAt: null,
+        });
+        return { id: notification.id, status: "retry_wait", retryInSeconds: retryDelaySeconds };
+      }
+
+      await updateNotificationLogAndState(notification, {
+        status: "failed",
+        lastHttpStatus: err instanceof SemaphoreRequestError ? err.httpStatus : null,
+        providerResponse: err?.providerResponse ?? null,
+        processingError: err?.causeMessage || err?.message || "Failed to send SMS",
+        errorMessage: err?.message || "Failed to send SMS",
+        lockedAt: null,
+        sentAt: null,
+      });
+
+      return { id: notification.id, status: "failed", reason: err?.message || "send_failed" };
+    }
+  } catch (err: any) {
+    console.error("Unexpected SMS notification processing failure", {
+      notificationId: notification.id,
+      error: err?.message || String(err),
+    });
+
+    try {
+      await updateNotificationLogAndState(notification, {
+        status: "failed",
+        attemptCount,
+        lastAttemptAt: now,
+        lastHttpStatus: null,
+        providerResponse: err?.providerResponse ?? null,
+        processingError: err?.message || "Unexpected SMS processing failure",
+        errorMessage: err?.message || "Unexpected SMS processing failure",
+        lockedAt: null,
+        sentAt: null,
+      });
+    } catch (updateErr: any) {
+      console.error("Failed to unlock SMS notification after unexpected failure", {
+        notificationId: notification.id,
+        error: updateErr?.message || String(updateErr),
+      });
+    }
+
+    return { id: notification.id, status: "failed", reason: err?.message || "unexpected_processing_failure" };
+  }
+}
+
+function getNotificationCreatedAt(notification: any): Date | null {
+  const createdAt = notification.createdAt instanceof Date
+    ? notification.createdAt
+    : notification.createdAt
+      ? new Date(notification.createdAt)
+      : null;
+
+  if (!createdAt || Number.isNaN(createdAt.getTime())) {
+    return null;
+  }
+
+  return createdAt;
+}
+
+async function purgeStaleQueuedSmsNotifications(now: Date) {
+  const notifications = await storage.getSmsNotificationsByStatus([...SMS_PENDING_QUEUE_STATUSES], 5000);
+  const staleNotificationIds: number[] = [];
+  const staleSmsLogIds: number[] = [];
+  const cutoff = now.getTime() - (SMS_NOTIFICATION_EXPIRY_HOURS * 60 * 60 * 1000);
+
+  for (const notification of notifications) {
+    const createdAt = getNotificationCreatedAt(notification);
+    if (createdAt && createdAt.getTime() >= cutoff) continue;
+    staleNotificationIds.push(notification.id);
+    if (notification.smsLogId) {
+      staleSmsLogIds.push(notification.smsLogId);
+    }
+  }
+
+  if (staleNotificationIds.length === 0) {
+    return 0;
+  }
+
+  await storage.markSmsLogsFailed(
+    staleSmsLogIds,
+    `Expired from SMS queue after ${SMS_NOTIFICATION_EXPIRY_HOURS} hours`,
+  );
+
+  return storage.deleteSmsNotifications(staleNotificationIds);
+}
+
+async function reconcileSubmittedSmsNotifications(limit = SMS_RECONCILE_BATCH_SIZE) {
+  const notifications = await storage.getSmsNotificationsByStatus(["submitted"], limit);
+  const notificationsBySchool = new Map<number, any[]>();
+
+  for (const notification of notifications) {
+    if (!notification.providerMessageId) continue;
+    const list = notificationsBySchool.get(notification.schoolId) ?? [];
+    list.push(notification);
+    notificationsBySchool.set(notification.schoolId, list);
+  }
+
+  const results: Array<Record<string, any>> = [];
+
+  for (const [schoolId, schoolNotifications] of Array.from(notificationsBySchool.entries())) {
+    const school = await storage.getSchool(schoolId);
+    if (!school || !hasNonEmptyString(school.semaphoreApiKey)) continue;
+
+    let messages: any[] = [];
+    try {
+      messages = await getSemaphoreMessages(school.semaphoreApiKey, {
+        limit: 1000,
+        startDate: buildDateShiftedIso(-1),
+        endDate: buildDateShiftedIso(0),
+      });
+    } catch (err: any) {
+      results.push({
+        schoolId,
+        status: "lookup_failed",
+        reason: err?.message || "Failed to reconcile Semaphore messages",
+      });
+      continue;
+    }
+
+    const byMessageId = new Map(
+      messages
+        .map((entry) => [String(getSemaphoreMessageId(entry) || ""), entry] as const)
+        .filter(([messageId]) => Boolean(messageId)),
+    );
+
+    for (const notification of schoolNotifications) {
+      const providerEntry = byMessageId.get(String(notification.providerMessageId || ""));
+      if (!providerEntry) continue;
+
+      const providerStatus = getSemaphoreProviderStatus(providerEntry);
+      const localStatus = mapSemaphoreDeliveryStatus(providerStatus);
+      await updateNotificationLogAndState(notification, {
+        status: localStatus,
+        providerStatus,
+        providerResponse: providerEntry,
+        errorMessage: localStatus === "failed" ? `Provider status: ${providerStatus}` : null,
+        processingError: null,
+        lockedAt: null,
+        sentAt: localStatus === "sent" ? new Date() : null,
+      });
+
+      results.push({
+        notificationId: notification.id,
+        schoolId,
+        status: localStatus,
+        providerStatus,
+      });
+    }
+  }
+
+  return results;
 }
 
 async function buildTemplateBasedKioskMessage(args: {
@@ -763,6 +1270,59 @@ async function getEffectiveLateTimeForStudent(student: { gradeLevelId?: number |
 
   const gradeLevel = await storage.getGradeLevel(Number(student.gradeLevelId));
   return gradeLevel?.lateTimeOverride || school.lateTime;
+}
+
+function getEffectiveLateTimeForAttendanceRecord(
+  record: { gradeLevelId?: number | null },
+  schoolLateTime: string,
+  gradeLateTimes: Map<number, string | null>,
+) {
+  if (!record.gradeLevelId) return schoolLateTime;
+  return gradeLateTimes.get(Number(record.gradeLevelId)) || schoolLateTime;
+}
+
+async function syncDailyLateStatusesForDate(
+  schoolId: number,
+  date: string,
+  school: { lateTime: string; timezone?: string },
+) {
+  const records = await storage.getAttendancesBySchoolAndDate(schoolId, date, ["present", "late", "pending_checkout"]);
+  if (records.length === 0) return 0;
+
+  const gradeLevelsForSchool = await storage.getGradeLevels(schoolId);
+  const gradeLateTimes = new Map(
+    gradeLevelsForSchool.map((gradeLevel) => [gradeLevel.id, gradeLevel.lateTimeOverride || null] as const),
+  );
+
+  let updated = 0;
+  for (const record of records) {
+    const expectedIsLate = Boolean(
+      record.checkInTime &&
+      isLateStoredDateTimeForSchool(
+        record.checkInTime,
+        getEffectiveLateTimeForAttendanceRecord(record, school.lateTime, gradeLateTimes),
+      ),
+    );
+
+    const patch: Record<string, any> = {};
+    if (Boolean(record.isLate) !== expectedIsLate) {
+      patch.isLate = expectedIsLate;
+    }
+
+    if (!record.checkOutTime && (record.status === "late" || record.status === "pending_checkout")) {
+      const expectedStatus = expectedIsLate ? "late" : "pending_checkout";
+      if (record.status !== expectedStatus) {
+        patch.status = expectedStatus;
+      }
+    }
+
+    if (Object.keys(patch).length > 0) {
+      await storage.updateDailyAttendance(record.id, patch);
+      updated++;
+    }
+  }
+
+  return updated;
 }
 
 function normalizeDailyReportStatuses(records: any[]): any[] {
@@ -1134,6 +1694,9 @@ export async function registerRoutes(
 
       const school = await storage.getSchool(schoolId);
       const date = (req.query.date as string) || getTodayIsoInTimezone(school?.timezone);
+      if (school) {
+        await syncDailyLateStatusesForDate(schoolId, date, school);
+      }
       const kpis = await storage.getDashboardKpis(schoolId, date);
       const recentEvents = await storage.getRecentEvents(schoolId, 10);
       const gradeBreakdown = await storage.getGradeAttendanceBreakdown(schoolId, date);
@@ -1198,6 +1761,8 @@ export async function registerRoutes(
       const page = Number(req.query.page) || 1;
       const pageSize = 20;
 
+      await syncDailyLateStatusesForDate(schoolId, date, school);
+
       if (status === "not_checked_in") {
         const result = await storage.getStudentsNotCheckedIn(
           schoolId, date, search,
@@ -1210,27 +1775,6 @@ export async function registerRoutes(
       }
 
       let records: any[] = [];
-      if (status === "pending_checkout" || status === "late") {
-        // Backfill old pending records that should have been marked late.
-        const pendingForDay = await storage.getAttendancesBySchoolAndDate(schoolId, date, "pending_checkout");
-        const staleLateRows = pendingForDay.filter(
-          (row: any) =>
-            !row.isLate &&
-            row.checkInTime &&
-            isLateStoredDateTimeForSchool(row.checkInTime, school.lateTime),
-        );
-        if (staleLateRows.length > 0) {
-          await Promise.all(
-            staleLateRows.map((row: any) =>
-              storage.updateDailyAttendance(row.id, {
-                status: "late",
-                isLate: true,
-              }),
-            ),
-          );
-        }
-      }
-
       if (status === "pending_checkout") {
         const [pendingRecords, lateRecords] = await Promise.all([
           storage.getAttendancesBySchoolAndDate(schoolId, date, "pending_checkout"),
@@ -1675,7 +2219,14 @@ export async function registerRoutes(
 
   app.patch("/api/grade-levels/:id", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
     try {
-      res.json(await storage.updateGradeLevel(Number(req.params.id), req.body));
+      const updated = await storage.updateGradeLevel(Number(req.params.id), req.body);
+      if (updated) {
+        const school = await storage.getSchool(updated.schoolId);
+        if (school) {
+          await syncDailyLateStatusesForDate(updated.schoolId, getTodayIsoInTimezone(school.timezone), school);
+        }
+      }
+      res.json(updated);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -1902,6 +2453,7 @@ export async function registerRoutes(
         await maybeSendAttendanceSms({
           school,
           student,
+          dailyAttendanceId: attendance.id,
           templateType: isLate ? "late" : "check_in",
           eventTime: now,
           status,
@@ -1946,6 +2498,7 @@ export async function registerRoutes(
         await maybeSendAttendanceSms({
           school,
           student,
+          dailyAttendanceId: existingAttendance.id,
           templateType: "check_out",
           eventTime: now,
           status: "present",
@@ -2054,6 +2607,7 @@ export async function registerRoutes(
         await maybeSendAttendanceSms({
           school,
           student,
+          dailyAttendanceId: attendance.id,
           templateType: isLate ? "late" : "check_in",
           eventTime: now,
           status,
@@ -2090,6 +2644,7 @@ export async function registerRoutes(
         await maybeSendAttendanceSms({
           school,
           student,
+          dailyAttendanceId: existing.id,
           templateType: "check_out",
           eventTime: now,
           status: "present",
@@ -2178,6 +2733,7 @@ export async function registerRoutes(
         await maybeSendAttendanceSms({
           school,
           student,
+          dailyAttendanceId,
           templateType: "absent",
           eventTime: now,
           status,
@@ -2293,7 +2849,7 @@ export async function registerRoutes(
 
   app.post("/api/cron/mark-absent", async (req, res) => {
     try {
-      const cronSecret = String(process.env.CRON_SECRET || "").trim();
+      const cronSecret = getCronSecret();
       const providedSecret = String(
         req.header("x-cron-secret")
         || req.header("authorization")?.replace(/^Bearer\s+/i, "")
@@ -2301,10 +2857,6 @@ export async function registerRoutes(
         || req.body?.secret
         || "",
       ).trim();
-
-      if (!cronSecret) {
-        return res.status(500).json({ message: "CRON_SECRET is not configured" });
-      }
 
       if (!providedSecret || providedSecret !== cronSecret) {
         return res.status(401).json({ message: "Unauthorized" });
@@ -2412,6 +2964,7 @@ export async function registerRoutes(
           await maybeSendAttendanceSms({
             school,
             student,
+            dailyAttendanceId: attendance.id,
             templateType: "absent",
             eventTime: now,
             status: "absent",
@@ -2437,6 +2990,80 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/cron/process-sms", async (req, res) => {
+    try {
+      const cronSecret = getCronSecret();
+      const providedSecret = String(
+        req.header("x-cron-secret")
+        || req.header("authorization")?.replace(/^Bearer\s+/i, "")
+        || req.query.secret
+        || req.body?.secret
+        || "",
+      ).trim();
+
+      if (!providedSecret || providedSecret !== cronSecret) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+
+      const now = new Date();
+      const cleanup = await purgeStaleQueuedSmsNotifications(now);
+      const limit = clampNumber(req.body?.limit ?? req.query.limit, 1, 50, SMS_PROCESS_BATCH_SIZE);
+      const candidateLimit = Math.min(Math.max(limit * 10, limit), 500);
+      const pendingNotifications = await storage.getPendingSmsNotifications(candidateLimit, now);
+      const notifications = pendingNotifications.slice(0, limit);
+
+      const results: Array<Record<string, any>> = [];
+
+      for (const notification of notifications) {
+        const claimed = await storage.claimSmsNotification(notification.id, ["queued", "retry_wait", "processing"], new Date());
+        if (!claimed) continue;
+        results.push(await processSmsNotification(notification));
+        await sleep(SMS_SEND_SPACING_MS);
+      }
+
+      return res.json({
+        success: true,
+        processedAt: new Date().toISOString(),
+        requestedLimit: limit,
+        cleaned: cleanup,
+        processed: results.length,
+        results,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ message: err?.message || "Failed to process SMS queue" });
+    }
+  });
+
+  app.post("/api/cron/reconcile-sms", async (req, res) => {
+    try {
+      const cronSecret = getCronSecret();
+      const providedSecret = String(
+        req.header("x-cron-secret")
+        || req.header("authorization")?.replace(/^Bearer\s+/i, "")
+        || req.query.secret
+        || req.body?.secret
+        || "",
+      ).trim();
+
+      if (!providedSecret || providedSecret !== cronSecret) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
+
+      const limit = clampNumber(req.body?.limit ?? req.query.limit, 1, 300, SMS_RECONCILE_BATCH_SIZE);
+      const results = await reconcileSubmittedSmsNotifications(limit);
+
+      return res.json({
+        success: true,
+        processedAt: new Date().toISOString(),
+        requestedLimit: limit,
+        processed: results.length,
+        results,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ message: err?.message || "Failed to reconcile SMS statuses" });
     }
   });
 
@@ -2622,13 +3249,12 @@ export async function registerRoutes(
           ? req.body.message
           : `[${school.name}] Test SMS from MYO Attendance sent at ${new Date().toISOString()}`;
 
-      const providerResponse = await sendSemaphoreMessage(
+      const result = await sendSemaphoreMessage(
         school.semaphoreApiKey,
         school.semaphoreSenderName || null,
         toPhone,
         testMessage,
       );
-      const providerMessageId = getSemaphoreMessageId(providerResponse);
 
       await storage.createSmsLog({
         schoolId: school.id,
@@ -2636,14 +3262,14 @@ export async function registerRoutes(
         templateType: null,
         toPhone,
         message: testMessage,
-        status: "sent",
-        providerMessageId,
-        providerResponse,
-        sentAt: new Date(),
+        status: mapSemaphoreDeliveryStatus(result.providerStatus),
+        providerMessageId: result.providerMessageId,
+        providerResponse: result.providerResponse,
+        sentAt: mapSemaphoreDeliveryStatus(result.providerStatus) === "sent" ? new Date() : null,
         errorMessage: null,
       });
 
-      return res.json({ ok: true, providerResponse });
+      return res.json({ ok: true, providerResponse: result.providerResponse });
     } catch (err: any) {
       return res.status(500).json({
         message: err?.message || "Failed to send test SMS",

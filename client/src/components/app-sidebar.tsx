@@ -62,7 +62,6 @@ export function AppSidebar() {
     { title: "Checked Out", url: "/today/present", icon: UserCheck },
     { title: "Late Arrivals", url: "/today/late", icon: Clock },
     { title: "On Campus", url: "/today/pending-checkout", icon: AlertTriangle },
-    { title: "Absent", url: "/today/absent", icon: UserX },
     { title: "Not Checked In", url: "/today/not-checked-in-yet", icon: HelpCircle },
   ];
 

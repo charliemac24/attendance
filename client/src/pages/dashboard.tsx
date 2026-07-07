@@ -13,12 +13,11 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getGradeLevelSortRank, normalizeGradeLevelName } from "@shared/grade-levels";
 import {
   UserCheck,
-  UserX,
   HelpCircle,
   Calendar,
   Trash2,
 } from "lucide-react";
-import { localIsoDate } from "@/lib/utils";
+import { formatDatabaseTime, localIsoDate } from "@/lib/utils";
 import type { School } from "@shared/schema";
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, XAxis, YAxis } from "recharts";
 
@@ -174,14 +173,6 @@ export default function DashboardPage() {
       ],
     },
     {
-      label: "Absent",
-      value: data?.kpis.absent ?? 0,
-      icon: UserX,
-      color: "text-red-600 dark:text-red-400",
-      bgColor: "bg-red-50 dark:bg-red-950/30",
-      description: "Students marked absent today",
-    },
-    {
       label: "Not Yet Checked In",
       value: data?.kpis.notCheckedIn ?? 0,
       icon: HelpCircle,
@@ -238,7 +229,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {isLoading
           ? Array.from({ length: 3 }).map((_, i) => (
               <Card key={i}>
@@ -457,7 +448,6 @@ export default function DashboardPage() {
                         <th className="text-left py-2 pr-3 font-medium">Grade</th>
                         <th className="text-right py-2 px-2 font-medium">Attendance</th>
                         <th className="text-right py-2 px-2 font-medium">Present</th>
-                        <th className="text-right py-2 px-2 font-medium">Absent</th>
                         <th className="text-right py-2 px-2 font-medium">Not In</th>
                       </tr>
                     </thead>
@@ -467,7 +457,6 @@ export default function DashboardPage() {
                           <td className="py-2 pr-3 font-medium">{row.gradeLevel}</td>
                           <td className="py-2 px-2 text-right">{row.attendanceRate}%</td>
                           <td className="py-2 px-2 text-right text-green-700">{row.checkedIn}</td>
-                          <td className="py-2 px-2 text-right text-red-700">{row.absent}</td>
                           <td className="py-2 px-2 text-right text-slate-600">{row.notCheckedIn}</td>
                         </tr>
                       ))}
@@ -509,10 +498,7 @@ export default function DashboardPage() {
                       <p className="text-xs text-muted-foreground">{event.eventType}</p>
                     </div>
                     <span className="text-xs text-muted-foreground whitespace-nowrap">
-                      {new Date(event.occurredAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
+                      {formatDatabaseTime(event.occurredAt)}
                     </span>
                   </div>
                 ))}

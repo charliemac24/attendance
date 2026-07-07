@@ -1,9 +1,9 @@
 import { db } from "./db";
-import { eq, and, sql, like, or, inArray, gte, lte, desc, not } from "drizzle-orm";
+import { eq, and, sql, like, or, inArray, gte, lte, desc, not, isNull, asc } from "drizzle-orm";
 import {
   schools, users, students, gradeLevels, sections,
   kioskLocations, dailyAttendances, attendanceEvents,
-  smsTemplates, smsLogs, teacherSections, schoolHolidays,
+  smsTemplates, smsLogs, smsNotifications, teacherSections, schoolHolidays,
   type School, type InsertSchool,
   type User, type InsertUser,
   type Student, type InsertStudent,
@@ -14,6 +14,7 @@ import {
   type AttendanceEvent, type InsertAttendanceEvent,
   type SmsTemplate, type InsertSmsTemplate,
   type SmsLog, type InsertSmsLog,
+  type SmsNotification, type InsertSmsNotification,
   type SchoolHoliday, type InsertSchoolHoliday,
 } from "@shared/schema";
 import { getGradeLevelSortRank, normalizeGradeLevelName } from "@shared/grade-levels";
@@ -31,6 +32,7 @@ const DEFAULT_SMS_TEMPLATES: Array<{ type: string; text: string; enabled: boolea
   { type: "early_out", text: "[{school_name}] {student_name} left early at {time} on {date}.", enabled: false },
   { type: "absent", text: "[{school_name}] {student_name} was marked absent on {date}.", enabled: false },
 ];
+const SMS_NOTIFICATION_STALE_LOCK_MINUTES = 15;
 
 export interface IStorage {
   // Auth
@@ -138,6 +140,14 @@ export interface IStorage {
   // SMS Logs
   getSmsLogs(schoolId: number, filters?: { from?: string; to?: string; limit?: number }): Promise<any[]>;
   createSmsLog(data: InsertSmsLog): Promise<SmsLog>;
+  updateSmsLog(id: number, data: Partial<InsertSmsLog>): Promise<SmsLog | undefined>;
+  markSmsLogsFailed(ids: number[], errorMessage: string): Promise<number>;
+  createSmsNotification(data: InsertSmsNotification): Promise<SmsNotification>;
+  updateSmsNotification(id: number, data: Partial<InsertSmsNotification>): Promise<SmsNotification | undefined>;
+  deleteSmsNotifications(notificationIds: number[]): Promise<number>;
+  claimSmsNotification(id: number, expectedStatuses: string[], now?: Date): Promise<boolean>;
+  getPendingSmsNotifications(limit: number, now?: Date): Promise<SmsNotification[]>;
+  getSmsNotificationsByStatus(statuses: string[], limit?: number): Promise<SmsNotification[]>;
   purgeSchoolLogsByDateRange(
     schoolId: number,
     from: string,
@@ -1065,6 +1075,121 @@ export class DatabaseStorage implements IStorage {
     return log!;
   }
 
+  async updateSmsLog(id: number, data: Partial<InsertSmsLog>): Promise<SmsLog | undefined> {
+    await db.update(smsLogs).set(data).where(eq(smsLogs.id, id));
+    const [log] = await db.select().from(smsLogs).where(eq(smsLogs.id, id));
+    return log;
+  }
+
+  async markSmsLogsFailed(ids: number[], errorMessage: string): Promise<number> {
+    const uniqueIds = Array.from(new Set(ids.filter((id) => Number.isInteger(id) && id > 0)));
+    if (uniqueIds.length === 0) {
+      return 0;
+    }
+
+    const updatedLogs: any = await db
+      .update(smsLogs)
+      .set({
+        status: "failed",
+        errorMessage,
+        sentAt: null,
+      } as Partial<InsertSmsLog>)
+      .where(inArray(smsLogs.id, uniqueIds));
+
+    return Number(updatedLogs?.rowsAffected ?? updatedLogs?.affectedRows ?? 0);
+  }
+
+  async createSmsNotification(data: InsertSmsNotification): Promise<SmsNotification> {
+    const [{ id }] = await db.insert(smsNotifications).values(data).$returningId();
+    const [notification] = await db.select().from(smsNotifications).where(eq(smsNotifications.id, id));
+    return notification!;
+  }
+
+  async updateSmsNotification(id: number, data: Partial<InsertSmsNotification>): Promise<SmsNotification | undefined> {
+    await db.update(smsNotifications).set(data).where(eq(smsNotifications.id, id));
+    const [notification] = await db.select().from(smsNotifications).where(eq(smsNotifications.id, id));
+    return notification;
+  }
+
+  async deleteSmsNotifications(notificationIds: number[]): Promise<number> {
+    const uniqueNotificationIds = Array.from(new Set(notificationIds.filter((id) => Number.isInteger(id) && id > 0)));
+
+    if (uniqueNotificationIds.length === 0) {
+      return 0;
+    }
+
+    const deletedNotifications: any = await db
+      .delete(smsNotifications)
+      .where(inArray(smsNotifications.id, uniqueNotificationIds));
+    return Number(deletedNotifications?.rowsAffected ?? deletedNotifications?.affectedRows ?? 0);
+  }
+
+  async claimSmsNotification(id: number, expectedStatuses: string[], now: Date = new Date()): Promise<boolean> {
+    const staleBefore = new Date(now.getTime() - (SMS_NOTIFICATION_STALE_LOCK_MINUTES * 60 * 1000));
+    const result: any = await db
+      .update(smsNotifications)
+      .set({
+        status: "processing",
+        lockedAt: now,
+        updatedAt: now,
+      } as Partial<InsertSmsNotification>)
+      .where(
+        and(
+          eq(smsNotifications.id, id),
+          inArray(smsNotifications.status, expectedStatuses),
+          or(
+            and(
+              inArray(smsNotifications.status, ["queued", "retry_wait"]),
+              or(
+                isNull(smsNotifications.nextAttemptAt),
+                lte(smsNotifications.nextAttemptAt, now),
+              ),
+            ),
+            and(
+              eq(smsNotifications.status, "processing"),
+              lte(smsNotifications.lockedAt, staleBefore),
+            ),
+          ),
+        ),
+      );
+
+    const affected = Number(result?.rowsAffected ?? result?.affectedRows ?? 0);
+    return affected > 0;
+  }
+
+  async getPendingSmsNotifications(limit: number, now: Date = new Date()): Promise<SmsNotification[]> {
+    const staleBefore = new Date(now.getTime() - (SMS_NOTIFICATION_STALE_LOCK_MINUTES * 60 * 1000));
+    return db
+      .select()
+      .from(smsNotifications)
+      .where(
+        or(
+          and(
+            inArray(smsNotifications.status, ["queued", "retry_wait"]),
+            or(
+              isNull(smsNotifications.nextAttemptAt),
+              lte(smsNotifications.nextAttemptAt, now),
+            ),
+          ),
+          and(
+            eq(smsNotifications.status, "processing"),
+            lte(smsNotifications.lockedAt, staleBefore),
+          ),
+        ),
+      )
+      .orderBy(asc(smsNotifications.nextAttemptAt), asc(smsNotifications.createdAt))
+      .limit(limit);
+  }
+
+  async getSmsNotificationsByStatus(statuses: string[], limit = 100): Promise<SmsNotification[]> {
+    return db
+      .select()
+      .from(smsNotifications)
+      .where(inArray(smsNotifications.status, statuses))
+      .orderBy(asc(smsNotifications.updatedAt), asc(smsNotifications.createdAt))
+      .limit(limit);
+  }
+
   async purgeSchoolLogsByDateRange(
     schoolId: number,
     from: string,
@@ -1078,35 +1203,84 @@ export class DatabaseStorage implements IStorage {
     let dailyAttendancesDeleted = 0;
     let smsLogsDeleted = 0;
 
-    if (deleteAttendance) {
-      const deletedEvents: any = await db.delete(attendanceEvents).where(
-        and(
-          eq(attendanceEvents.schoolId, schoolId),
-          gte(sql`DATE(${attendanceEvents.occurredAt})`, from),
-          lte(sql`DATE(${attendanceEvents.occurredAt})`, to),
-        ),
-      );
-      attendanceEventsDeleted = Number(deletedEvents?.rowsAffected ?? deletedEvents?.affectedRows ?? 0);
+    const attendanceIds = deleteAttendance
+      ? (await db
+        .select({ id: dailyAttendances.id })
+        .from(dailyAttendances)
+        .where(
+          and(
+            eq(dailyAttendances.schoolId, schoolId),
+            gte(dailyAttendances.date, from),
+            lte(dailyAttendances.date, to),
+          ),
+        ))
+        .map((row) => row.id)
+      : [];
 
-      const deletedDailyAttendances: any = await db.delete(dailyAttendances).where(
+    const smsLogIds = deleteSms
+      ? (await db
+        .select({ id: smsLogs.id })
+        .from(smsLogs)
+        .where(
+          and(
+            eq(smsLogs.schoolId, schoolId),
+            gte(sql`DATE(${smsLogs.createdAt})`, from),
+            lte(sql`DATE(${smsLogs.createdAt})`, to),
+          ),
+        ))
+        .map((row) => row.id)
+      : [];
+
+    if (attendanceIds.length > 0 || smsLogIds.length > 0) {
+      const notificationFilters = [];
+
+      if (attendanceIds.length > 0) {
+        notificationFilters.push(inArray(smsNotifications.dailyAttendanceId, attendanceIds));
+      }
+
+      if (smsLogIds.length > 0) {
+        notificationFilters.push(inArray(smsNotifications.smsLogId, smsLogIds));
+      }
+
+      const deletedNotifications: any = await db.delete(smsNotifications).where(
         and(
-          eq(dailyAttendances.schoolId, schoolId),
-          gte(dailyAttendances.date, from),
-          lte(dailyAttendances.date, to),
+          eq(smsNotifications.schoolId, schoolId),
+          notificationFilters.length === 1 ? notificationFilters[0] : or(...notificationFilters),
         ),
       );
-      dailyAttendancesDeleted = Number(deletedDailyAttendances?.rowsAffected ?? deletedDailyAttendances?.affectedRows ?? 0);
+      void deletedNotifications;
+    }
+
+    if (deleteAttendance) {
+      if (attendanceIds.length > 0) {
+        const deletedEvents: any = await db.delete(attendanceEvents).where(
+          and(
+            eq(attendanceEvents.schoolId, schoolId),
+            inArray(attendanceEvents.dailyAttendanceId, attendanceIds),
+          ),
+        );
+        attendanceEventsDeleted = Number(deletedEvents?.rowsAffected ?? deletedEvents?.affectedRows ?? 0);
+
+        const deletedDailyAttendances: any = await db.delete(dailyAttendances).where(
+          and(
+            eq(dailyAttendances.schoolId, schoolId),
+            inArray(dailyAttendances.id, attendanceIds),
+          ),
+        );
+        dailyAttendancesDeleted = Number(deletedDailyAttendances?.rowsAffected ?? deletedDailyAttendances?.affectedRows ?? 0);
+      }
     }
 
     if (deleteSms) {
-      const deletedSms: any = await db.delete(smsLogs).where(
-        and(
-          eq(smsLogs.schoolId, schoolId),
-          gte(sql`DATE(${smsLogs.createdAt})`, from),
-          lte(sql`DATE(${smsLogs.createdAt})`, to),
-        ),
-      );
-      smsLogsDeleted = Number(deletedSms?.rowsAffected ?? deletedSms?.affectedRows ?? 0);
+      if (smsLogIds.length > 0) {
+        const deletedSms: any = await db.delete(smsLogs).where(
+          and(
+            eq(smsLogs.schoolId, schoolId),
+            inArray(smsLogs.id, smsLogIds),
+          ),
+        );
+        smsLogsDeleted = Number(deletedSms?.rowsAffected ?? deletedSms?.affectedRows ?? 0);
+      }
     }
 
     return { attendanceEventsDeleted, dailyAttendancesDeleted, smsLogsDeleted };
@@ -1539,6 +1713,8 @@ export class DatabaseStorage implements IStorage {
         sent: sql<number>`sum(case when ${smsLogs.status} = 'sent' then 1 else 0 end)`,
         failed: sql<number>`sum(case when ${smsLogs.status} = 'failed' then 1 else 0 end)`,
         queued: sql<number>`sum(case when ${smsLogs.status} = 'queued' then 1 else 0 end)`,
+        submitted: sql<number>`sum(case when ${smsLogs.status} = 'submitted' then 1 else 0 end)`,
+        retryWait: sql<number>`sum(case when ${smsLogs.status} = 'retry_wait' then 1 else 0 end)`,
       })
       .from(smsLogs)
       .where(

@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StatusBadge } from "@/components/status-badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatDatabaseTime, localIsoDate } from "@/lib/utils";
@@ -237,7 +236,6 @@ export default function TodayStatusPage() {
                       <>
                         <th className="text-left py-3 px-4 font-medium">Check-in</th>
                         <th className="text-left py-3 px-4 font-medium">Check-out</th>
-                        <th className="text-left py-3 px-4 font-medium">Status</th>
                       </>
                     )}
                     {statusKey === "not-checked-in-yet" && (
@@ -267,9 +265,6 @@ export default function TodayStatusPage() {
                             {record.checkOutTime
                               ? formatDatabaseTime(record.checkOutTime)
                               : "—"}
-                          </td>
-                          <td className="py-3 px-4">
-                            <StatusBadge status={record.status} />
                           </td>
                         </>
                       )}
