@@ -1,8 +1,12 @@
-const DEFAULT_APP_TIMEZONE = "Asia/Manila";
+export const PHILIPPINE_TIMEZONE = "Asia/Manila";
 
-export function formatDateTimeInTimezone(date: Date, timezone = DEFAULT_APP_TIMEZONE): string {
+export function getPhilippineTimezone(): string {
+  return PHILIPPINE_TIMEZONE;
+}
+
+export function formatDateTimeInTimezone(date: Date, _timezone = PHILIPPINE_TIMEZONE): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
+    timeZone: PHILIPPINE_TIMEZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -21,5 +25,5 @@ export function formatDateTimeInTimezone(date: Date, timezone = DEFAULT_APP_TIME
 }
 
 export function formatQueueDateTime(date: Date): string {
-  return formatDateTimeInTimezone(date, DEFAULT_APP_TIMEZONE);
+  return formatDateTimeInTimezone(date, PHILIPPINE_TIMEZONE);
 }

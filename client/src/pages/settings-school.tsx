@@ -223,9 +223,10 @@ export default function SettingsSchoolPage() {
               <Label>Timezone</Label>
               <Input
                 value={formData.timezone}
-                onChange={(e) => setFormData({ ...formData, timezone: e.target.value })}
+                readOnly
                 data-testid="input-timezone"
               />
+              <p className="text-sm text-muted-foreground">Fixed to Philippine time for all schools.</p>
             </div>
             <div className="space-y-2">
               <Label>Late Time</Label>

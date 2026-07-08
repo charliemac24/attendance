@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { formatDatabaseTime, localIsoDate } from "@/lib/utils";
+import { formatDatabaseTime, isoDateWithOffset, localIsoDate } from "@/lib/utils";
 import {
   Calendar,
   Search,
@@ -44,6 +44,7 @@ interface StatusPageData {
     checkOutTime: string | null;
     status: string;
     guardianPhone: string | null;
+    missedCheckoutYesterday?: boolean;
   }>;
   total: number;
   page: number;
@@ -114,9 +115,7 @@ export default function TodayStatusPage() {
     setPage(1);
   };
   const setYesterday = () => {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    setSelectedDate(d.toLocaleDateString("en-CA", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }));
+    setSelectedDate(isoDateWithOffset(-1));
     setPage(1);
   };
 
@@ -250,6 +249,11 @@ export default function TodayStatusPage() {
                       <td className="py-3 px-4">
                         <p className="font-medium">{record.studentName}</p>
                         <p className="text-xs text-muted-foreground">{record.studentNo}</p>
+                        {record.missedCheckoutYesterday && (
+                          <p className="mt-1 inline-flex rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-700">
+                            Missed check-out yesterday
+                          </p>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-muted-foreground">
                         {record.gradeLevel} / {record.section || "—"}

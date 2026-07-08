@@ -5,10 +5,19 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-// Returns YYYY-MM-DD in the user's local timezone (avoids UTC date shifting).
+export const PHILIPPINE_TIMEZONE = "Asia/Manila";
+
+// Returns YYYY-MM-DD in Philippine time.
 export function localIsoDate(): string {
   return new Date()
-    .toLocaleDateString("en-CA", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+    .toLocaleDateString("en-CA", { timeZone: PHILIPPINE_TIMEZONE });
+}
+
+export function isoDateWithOffset(offsetDays: number): string {
+  const parts = localIsoDate().split("-").map(Number);
+  const base = new Date(Date.UTC(parts[0], (parts[1] || 1) - 1, parts[2] || 1));
+  base.setUTCDate(base.getUTCDate() + offsetDays);
+  return base.toLocaleDateString("en-CA", { timeZone: "UTC" });
 }
 
 // Formats a database datetime as a wall-clock time without applying browser timezone conversion.

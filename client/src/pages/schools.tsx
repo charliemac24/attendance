@@ -4,7 +4,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -288,9 +287,10 @@ export default function SchoolsPage() {
               <Label>Timezone</Label>
               <Input
                 value={formData.timezone}
-                onChange={(e) => setFormData({ ...formData, timezone: e.target.value })}
+                readOnly
                 data-testid="input-school-timezone"
               />
+              <p className="text-xs text-muted-foreground">Fixed to Philippine time for all schools.</p>
             </div>
             <div className="space-y-2">
               <Label>Late Time</Label>
@@ -298,13 +298,6 @@ export default function SchoolsPage() {
                 type="time"
                 value={formData.lateTime}
                 onChange={(e) => setFormData({ ...formData, lateTime: e.target.value })}
-              />
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <Label>SMS Enabled</Label>
-              <Switch
-                checked={formData.smsEnabled}
-                onCheckedChange={(v) => setFormData({ ...formData, smsEnabled: v })}
               />
             </div>
             <div className="space-y-2">

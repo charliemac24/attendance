@@ -17,7 +17,7 @@ import {
   Calendar,
   Trash2,
 } from "lucide-react";
-import { formatDatabaseTime, localIsoDate } from "@/lib/utils";
+import { formatDatabaseTime, isoDateWithOffset, localIsoDate } from "@/lib/utils";
 import type { School } from "@shared/schema";
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, XAxis, YAxis } from "recharts";
 
@@ -47,6 +47,18 @@ interface DashboardData {
     absent: number;
     onCampus: number;
     notCheckedIn: number;
+  }>;
+  missedCheckoutsPreviousDay: Array<{
+    id: number;
+    studentId: number;
+    studentName: string;
+    studentNo: string;
+    gradeLevel: string;
+    section: string;
+    date: string;
+    checkInTime: string | null;
+    checkOutTime: string | null;
+    status: string;
   }>;
 }
 
@@ -182,12 +194,8 @@ export default function DashboardPage() {
     },
   ];
 
-  const setToday = () => setSelectedDate(new Date().toLocaleDateString("en-CA", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }));
-  const setYesterday = () => {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    setSelectedDate(d.toLocaleDateString("en-CA", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }));
-  };
+  const setToday = () => setSelectedDate(localIsoDate());
+  const setYesterday = () => setSelectedDate(isoDateWithOffset(-1));
 
   const handleClearRecentActivity = () => {
     if (!window.confirm("Clear all recent activity entries for this school?")) return;
@@ -289,6 +297,69 @@ export default function DashboardPage() {
           <span className="text-3xl font-black text-foreground leading-none">{data.kpis.total}</span>
         </div>
       )}
+
+      <Card className="border-amber-300 bg-amber-50/60">
+        <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-amber-950">Missed Check-Out Yesterday</h3>
+            <p className="text-xs text-amber-900/80 mt-1">
+              Open attendance records from {isoDateWithOffset(-1)} are tracked separately and do not affect today&apos;s scans.
+            </p>
+          </div>
+          <Badge
+            className={`no-default-hover-elevate no-default-active-elevate ${
+              (data?.missedCheckoutsPreviousDay?.length || 0) > 0
+                ? "bg-red-600 text-white border-red-700"
+                : "bg-emerald-600 text-white border-emerald-700"
+            }`}
+          >
+            {(data?.missedCheckoutsPreviousDay?.length || 0) > 0
+              ? `${data?.missedCheckoutsPreviousDay?.length || 0} alert`
+              : "0 alerts"}
+          </Badge>
+        </CardHeader>
+        <CardContent>
+          {data?.missedCheckoutsPreviousDay && data.missedCheckoutsPreviousDay.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-amber-200 text-amber-900/80">
+                    <th className="text-left py-2 pr-3 font-medium">Student</th>
+                    <th className="text-left py-2 pr-3 font-medium">Class</th>
+                    <th className="text-left py-2 pr-3 font-medium">Yesterday Check-In</th>
+                    <th className="text-left py-2 font-medium">Label</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.missedCheckoutsPreviousDay.map((record) => (
+                    <tr key={record.id} className="border-b border-amber-100 last:border-0">
+                      <td className="py-2 pr-3">
+                        <p className="font-medium text-amber-950">{record.studentName}</p>
+                        <p className="text-xs text-amber-900/70">{record.studentNo}</p>
+                      </td>
+                      <td className="py-2 pr-3 text-amber-900/80">
+                        {record.gradeLevel} / {record.section || "-"}
+                      </td>
+                      <td className="py-2 pr-3 text-amber-900/80">
+                        {record.checkInTime ? formatDatabaseTime(record.checkInTime) : "-"}
+                      </td>
+                      <td className="py-2">
+                        <Badge className="bg-red-600 text-white border-red-700 no-default-hover-elevate no-default-active-elevate">
+                          Missed Check-Out Yesterday
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-emerald-200 bg-white/70 px-4 py-6 text-sm text-emerald-800">
+              No students missed check-out yesterday.
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {(school?.showStudentsNeedingAttention ?? true) && (
         <Card>

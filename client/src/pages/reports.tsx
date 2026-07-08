@@ -65,10 +65,7 @@ export default function ReportsPage() {
   const { toast } = useToast();
 
   const today = localIsoDate();
-  const startOfMonth = new Date();
-  startOfMonth.setDate(1);
-  const defaultStartDate = startOfMonth
-    .toLocaleDateString("en-CA", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  const defaultStartDate = `${today.slice(0, 8)}01`;
   const [startDate, setStartDate] = useState(defaultStartDate);
   const [endDate, setEndDate] = useState(today);
   const [month, setMonth] = useState(today.slice(0, 7));

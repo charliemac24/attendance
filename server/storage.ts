@@ -17,6 +17,11 @@ import {
   type SmsNotification, type InsertSmsNotification,
   type SchoolHoliday, type InsertSchoolHoliday,
 } from "@shared/schema";
+import { PHILIPPINE_TIMEZONE } from "./datetime";
+
+function normalizeSchoolTimezone<T extends { timezone?: string | null }>(school: T): T {
+  return { ...school, timezone: PHILIPPINE_TIMEZONE };
+}
 import { getGradeLevelSortRank, normalizeGradeLevelName } from "@shared/grade-levels";
 import { buildStudentQrToken } from "@shared/qr";
 import bcrypt from "bcryptjs";
@@ -126,6 +131,7 @@ export interface IStorage {
     filters: { startDate: string; endDate: string; gradeId?: number; sectionId?: number; studentName?: string; studentNo?: string },
   ): Promise<{ attendanceEventsDeleted: number; dailyAttendancesDeleted: number }>;
   getAttendancesBySchoolAndDate(schoolId: number, date: string, status?: string): Promise<any[]>;
+  getMissedCheckoutRecordsByDate(schoolId: number, date: string): Promise<any[]>;
   getStudentsNotCheckedIn(schoolId: number, date: string, search?: string, gradeId?: number, sectionId?: number, page?: number, pageSize?: number, allowedSectionIds?: number[] | null): Promise<{ records: any[]; total: number }>;
 
   // Attendance Events
@@ -208,29 +214,30 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getSchools(): Promise<School[]> {
-    return db.select().from(schools);
+    const rows = await db.select().from(schools);
+    return rows.map((school) => normalizeSchoolTimezone(school));
   }
 
   async getSchool(id: number): Promise<School | undefined> {
     const [school] = await db.select().from(schools).where(eq(schools.id, id));
-    return school;
+    return school ? normalizeSchoolTimezone(school) : undefined;
   }
 
   async getSchoolByLoginSlug(loginSlug: string): Promise<School | undefined> {
     const [school] = await db.select().from(schools).where(eq(schools.loginSlug, loginSlug));
-    return school;
+    return school ? normalizeSchoolTimezone(school) : undefined;
   }
 
   async createSchool(data: InsertSchool): Promise<School> {
     const [{ id }] = await db.insert(schools).values(data).$returningId();
     const [school] = await db.select().from(schools).where(eq(schools.id, id));
-    return school!;
+    return normalizeSchoolTimezone(school!);
   }
 
   async updateSchool(id: number, data: Partial<InsertSchool>): Promise<School | undefined> {
     await db.update(schools).set(data).where(eq(schools.id, id));
     const [school] = await db.select().from(schools).where(eq(schools.id, id));
-    return school;
+    return school ? normalizeSchoolTimezone(school) : undefined;
   }
 
   async deleteSchool(id: number): Promise<void> {
@@ -896,6 +903,39 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(gradeLevels, eq(students.gradeLevelId, gradeLevels.id))
       .leftJoin(sections, eq(students.sectionId, sections.id))
       .where(and(...conditions));
+  }
+
+  async getMissedCheckoutRecordsByDate(schoolId: number, date: string): Promise<any[]> {
+    return db
+      .select({
+        id: dailyAttendances.id,
+        studentId: dailyAttendances.studentId,
+        date: dailyAttendances.date,
+        status: dailyAttendances.status,
+        checkInTime: dailyAttendances.checkInTime,
+        checkOutTime: dailyAttendances.checkOutTime,
+        isLate: dailyAttendances.isLate,
+        studentName: sql<string>`CONCAT(${students.firstName}, ' ', ${students.lastName})`,
+        studentNo: students.studentNo,
+        gradeLevelId: students.gradeLevelId,
+        sectionId: students.sectionId,
+        gradeLevel: gradeLevels.name,
+        section: sections.name,
+        guardianPhone: students.guardianPhone,
+      })
+      .from(dailyAttendances)
+      .innerJoin(students, eq(dailyAttendances.studentId, students.id))
+      .leftJoin(gradeLevels, eq(students.gradeLevelId, gradeLevels.id))
+      .leftJoin(sections, eq(students.sectionId, sections.id))
+      .where(
+        and(
+          eq(dailyAttendances.schoolId, schoolId),
+          eq(dailyAttendances.date, date),
+          sql`${dailyAttendances.checkInTime} IS NOT NULL`,
+          sql`${dailyAttendances.checkOutTime} IS NULL`,
+          inArray(dailyAttendances.status, ["pending_checkout", "late"]),
+        ),
+      );
   }
 
   async getStudentsNotCheckedIn(

@@ -12,7 +12,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "./db";
 import { attendanceEvents, dailyAttendances, gradeLevels, schools, sections, smsLogs, students, type Student } from "@shared/schema";
 import { buildStudentQrToken } from "@shared/qr";
-import { formatDateTimeInTimezone } from "./datetime";
+import { formatDateTimeInTimezone, PHILIPPINE_TIMEZONE } from "./datetime";
 
 const MemoryStore = createMemoryStore(session);
 const upload = multer({ storage: multer.memoryStorage() });
@@ -129,9 +129,8 @@ function getCronSecret(): string {
 }
 
 function getTodayIsoInTimezone(timezone?: string): string {
-  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
+    timeZone: PHILIPPINE_TIMEZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -139,9 +138,20 @@ function getTodayIsoInTimezone(timezone?: string): string {
 }
 
 function formatIsoInTimezone(date: Date, timezone?: string): string {
-  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
+    timeZone: PHILIPPINE_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function shiftIsoDate(isoDate: string, offsetDays: number): string {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  const date = new Date(Date.UTC(year || 0, (month || 1) - 1, day || 1));
+  date.setUTCDate(date.getUTCDate() + offsetDays);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "UTC",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -530,6 +540,16 @@ async function sendSemaphoreMessage(apiKey: string, senderName: string | null, t
     rateLimitRemaining: getHeaderInt(response.headers, "X-RateLimit-Remaining"),
     rateLimitLimit: getHeaderInt(response.headers, "X-RateLimit-Limit"),
   };
+}
+
+function annotateMissedCheckoutFlag<T extends { studentId: number }>(
+  records: T[],
+  missedCheckoutStudentIds: Set<number>,
+): Array<T & { missedCheckoutYesterday: boolean }> {
+  return records.map((record) => ({
+    ...record,
+    missedCheckoutYesterday: missedCheckoutStudentIds.has(Number(record.studentId)),
+  }));
 }
 
 function getSemaphoreMessageId(providerResponse: any): string | null {
@@ -1212,13 +1232,9 @@ async function buildTemplateBasedKioskMessage(args: {
 }
 
 function getTimePartsInTimezone(date: Date, timezone?: string): { hour: number; minute: number } {
-  if (!timezone) {
-    return { hour: date.getHours(), minute: date.getMinutes() };
-  }
-
   try {
     const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone,
+      timeZone: PHILIPPINE_TIMEZONE,
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
@@ -1700,8 +1716,11 @@ export async function registerRoutes(
       const kpis = await storage.getDashboardKpis(schoolId, date);
       const recentEvents = await storage.getRecentEvents(schoolId, 10);
       const gradeBreakdown = await storage.getGradeAttendanceBreakdown(schoolId, date);
+      const previousDate = shiftIsoDate(date, -1);
+      const missedCheckoutsPreviousDay = (await storage.getMissedCheckoutRecordsByDate(schoolId, previousDate))
+        .map((record: any) => normalizeAttendanceRecordTimes(record));
 
-      res.json({ date, kpis, recentEvents, gradeBreakdown });
+      res.json({ date, kpis, recentEvents, gradeBreakdown, missedCheckoutsPreviousDay });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -1760,6 +1779,10 @@ export async function registerRoutes(
       const sectionFilter = req.query.section as string;
       const page = Number(req.query.page) || 1;
       const pageSize = 20;
+      const previousDate = shiftIsoDate(date, -1);
+      const missedCheckoutStudentIds = new Set(
+        (await storage.getMissedCheckoutRecordsByDate(schoolId, previousDate)).map((record: any) => Number(record.studentId)),
+      );
 
       await syncDailyLateStatusesForDate(schoolId, date, school);
 
@@ -1771,7 +1794,12 @@ export async function registerRoutes(
           page, pageSize,
           sectionScope,
         );
-        return res.json({ records: result.records, total: result.total, page, pageSize });
+        return res.json({
+          records: annotateMissedCheckoutFlag(result.records, missedCheckoutStudentIds),
+          total: result.total,
+          page,
+          pageSize,
+        });
       }
 
       let records: any[] = [];
@@ -1814,7 +1842,12 @@ export async function registerRoutes(
         .slice((page - 1) * pageSize, page * pageSize)
         .map((record: any) => normalizeAttendanceRecordTimes(record));
 
-      res.json({ records: paged, total, page, pageSize });
+      res.json({
+        records: annotateMissedCheckoutFlag(paged, missedCheckoutStudentIds),
+        total,
+        page,
+        pageSize,
+      });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -2809,6 +2842,7 @@ export async function registerRoutes(
       }
       const payload = {
         ...req.body,
+        timezone: PHILIPPINE_TIMEZONE,
         loginSlug: normalizedLoginSlug === undefined ? req.body.loginSlug : normalizedLoginSlug || null,
         smsDailyCap: -1,
         smsSendMode: "ALL_MOVEMENTS",
@@ -3292,6 +3326,7 @@ export async function registerRoutes(
       const { adminUsername, adminPassword, adminFullName, adminEmail, ...schoolData } = req.body;
       const school = await storage.createSchool({
         ...schoolData,
+        timezone: PHILIPPINE_TIMEZONE,
         smsSendMode: "ALL_MOVEMENTS",
         allowMultipleScans: true,
         monthlySmsCredits: clampNumber(schoolData.monthlySmsCredits, 0, 1000000, 0),
@@ -3319,6 +3354,7 @@ export async function registerRoutes(
     try {
       const payload = {
         ...req.body,
+        timezone: PHILIPPINE_TIMEZONE,
         smsSendMode: "ALL_MOVEMENTS",
         allowMultipleScans: true,
         monthlySmsCredits: clampNumber(req.body.monthlySmsCredits, 0, 1000000, 0),
