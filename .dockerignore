@@ -3,9 +3,10 @@ node_modules
 .gitignore
 npm-debug.log
 Dockerfile*
-docker-compose*.yml
 .env
 .env.*
 !.env.example
 attached_assets
 .local
+!dist
+!dist/**

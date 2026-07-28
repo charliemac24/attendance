@@ -2,13 +2,12 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { ScanLine, CheckCircle, XCircle, UserCheck, Camera, CameraOff } from "lucide-react";
+import { ScanLine, CheckCircle, XCircle, UserCheck, Camera, CameraOff, Dot, ScanSearch } from "lucide-react";
 import jsQR from "jsqr";
 import type { KioskLocation } from "@shared/schema";
 
@@ -22,15 +21,95 @@ interface ScanResult {
   time?: string;
 }
 
+interface RecentScan {
+  id: number;
+  studentName: string;
+  photoUrl?: string | null;
+  eventType: string;
+  occurredAt: string;
+}
+
+interface RecentScansResponse {
+  records: RecentScan[];
+  total: number;
+}
+
+const RECENT_SCANS_PAGE_SIZE = 10;
+const PHILIPPINE_TIMEZONE = "Asia/Manila";
+let scanFeedbackAudioContext: AudioContext | null = null;
+
+export function unlockDesktopScanFeedback() {
+  if (typeof window === "undefined" || !window.matchMedia("(min-width: 768px)").matches) return;
+
+  const audioContext = scanFeedbackAudioContext ?? new AudioContext();
+  scanFeedbackAudioContext = audioContext;
+  void audioContext.resume().catch(() => {
+    // The browser will allow another attempt on the next user interaction.
+  });
+}
+
+export function playDesktopScanFeedback(success: boolean) {
+  if (typeof window === "undefined" || !window.matchMedia("(min-width: 768px)").matches) return;
+
+  unlockDesktopScanFeedback();
+  const audioContext = scanFeedbackAudioContext;
+  if (!audioContext) return;
+
+  void audioContext.resume().then(() => {
+    const playTone = (frequency: number, startOffset: number, duration: number) => {
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      const startTime = audioContext.currentTime + startOffset;
+
+      oscillator.type = success ? "sine" : "square";
+      oscillator.frequency.setValueAtTime(frequency, startTime);
+      gain.gain.setValueAtTime(0.0001, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.14, startTime + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+      oscillator.connect(gain).connect(audioContext.destination);
+      oscillator.start(startTime);
+      oscillator.stop(startTime + duration + 0.01);
+    };
+
+    if (success) {
+      playTone(880, 0, 0.11);
+      playTone(1175, 0.12, 0.14);
+    } else {
+      playTone(180, 0, 0.8);
+    }
+  }).catch(() => {
+    // Browsers can block audio until a user interaction; scanning remains functional without sound.
+  });
+}
+
+export function formatRecentScanTime(occurredAt: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: PHILIPPINE_TIMEZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  }).format(new Date(occurredAt));
+}
+
+function formatScanAction(eventType: string) {
+  const labels: Record<string, string> = {
+    check_in: "Check-in",
+    late_check_in: "Late arrival",
+    out_final: "Check-out",
+    scan_ignored: "Scan ignored",
+  };
+  return labels[eventType] || eventType.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 export default function GateKiosksPage() {
   const [selectedKiosk, setSelectedKiosk] = useState<string>("");
-  const [qrInput, setQrInput] = useState("");
   const [lastResult, setLastResult] = useState<ScanResult | null>(null);
-  const [recentScans, setRecentScans] = useState<ScanResult[]>([]);
+  const [recentScansPage, setRecentScansPage] = useState(1);
   const [popupResult, setPopupResult] = useState<ScanResult | null>(null);
   const [showScanPopup, setShowScanPopup] = useState(false);
   const [cameraRunning, setCameraRunning] = useState(false);
   const [cameraError, setCameraError] = useState<string>("");
+  const [scannerProgress, setScannerProgress] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -40,6 +119,7 @@ export default function GateKiosksPage() {
   const lastCameraTokenAtRef = useRef<number>(0);
   const popupTimeoutRef = useRef<number | null>(null);
   const { toast } = useToast();
+  const COMPLETE_QR_TOKEN_PATTERN = /^[0-9a-f]{32}$/i;
 
   const focusQrInput = () => {
     if (cameraRunning) return;
@@ -53,8 +133,34 @@ export default function GateKiosksPage() {
     });
   };
 
+  const getQrInputValue = () => inputRef.current?.value ?? "";
+
+  const setQrInputValue = (value: string) => {
+    if (!inputRef.current) return;
+    inputRef.current.value = value;
+  };
+
+  const clearQrInput = () => {
+    if (!inputRef.current) return;
+    inputRef.current.value = "";
+    setScannerProgress(0);
+  };
+
   const { data: kiosks } = useQuery<KioskLocation[]>({
     queryKey: ["/api/kiosks"],
+  });
+
+  const { data: recentScans, isLoading: isLoadingRecentScans } = useQuery<RecentScansResponse>({
+    queryKey: ["/api/kiosk/recent-scans", selectedKiosk, recentScansPage],
+    queryFn: async () => {
+      const response = await fetch(
+        `/api/kiosk/recent-scans?kioskLocationId=${selectedKiosk}&page=${recentScansPage}&pageSize=${RECENT_SCANS_PAGE_SIZE}`,
+        { credentials: "include" },
+      );
+      if (!response.ok) throw new Error((await response.text()) || "Unable to load recent scans");
+      return response.json();
+    },
+    enabled: Boolean(selectedKiosk),
   });
 
   useEffect(() => {
@@ -62,6 +168,10 @@ export default function GateKiosksPage() {
       setSelectedKiosk(String(kiosks[0].id));
     }
   }, [kiosks, selectedKiosk]);
+
+  useEffect(() => {
+    setRecentScansPage(1);
+  }, [selectedKiosk]);
 
   const scanMutation = useMutation({
     mutationFn: async (qrToken: string) => {
@@ -73,7 +183,7 @@ export default function GateKiosksPage() {
     },
     onSuccess: (data: ScanResult) => {
       setLastResult(data);
-      setRecentScans((prev) => [data, ...prev.slice(0, 9)]);
+      playDesktopScanFeedback(data.success);
       if (data.success) {
         setPopupResult(data);
         setShowScanPopup(true);
@@ -82,25 +192,44 @@ export default function GateKiosksPage() {
         }
         popupTimeoutRef.current = window.setTimeout(() => {
           setShowScanPopup(false);
-        }, 1800);
+        }, 5000);
       }
-      setQrInput("");
+      clearQrInput();
       queryClient.invalidateQueries({
         predicate: (query) => (query.queryKey[0] as string)?.startsWith("/api/dashboard"),
       });
+      queryClient.invalidateQueries({ queryKey: ["/api/kiosk/recent-scans"] });
+      setRecentScansPage(1);
       focusQrInput();
     },
     onError: (err: any) => {
+      playDesktopScanFeedback(false);
       const result: ScanResult = {
         success: false,
         message: err.message || "Scan failed",
       };
       setLastResult(result);
-      setRecentScans((prev) => [result, ...prev.slice(0, 9)]);
-      setQrInput("");
+      clearQrInput();
       focusQrInput();
     },
   });
+
+  const submitQrToken = useCallback((rawValue: string) => {
+    const qrToken = rawValue.trim();
+    if (!qrToken || scanMutation.isPending) return;
+
+    if (!selectedKiosk) {
+      toast({
+        title: "Select kiosk location",
+        description: "Choose a kiosk location before scanning.",
+        variant: "destructive",
+      });
+      focusQrInput();
+      return;
+    }
+
+    scanMutation.mutate(qrToken);
+  }, [scanMutation, selectedKiosk, toast]);
 
   const stopCamera = useCallback(() => {
     if (frameRef.current !== null) {
@@ -133,21 +262,13 @@ export default function GateKiosksPage() {
 
     lastCameraTokenRef.current = qrToken;
     lastCameraTokenAtRef.current = now;
-    setQrInput(qrToken);
-
-    if (!selectedKiosk) {
-      toast({
-        title: "Select kiosk location",
-        description: "Choose a kiosk location before scanning.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    scanMutation.mutate(qrToken);
-  }, [scanMutation, selectedKiosk, toast]);
+    setQrInputValue(qrToken);
+    setScannerProgress(qrToken.length);
+    submitQrToken(qrToken);
+  }, [scanMutation.isPending, submitQrToken]);
 
   const startCamera = useCallback(async () => {
+    unlockDesktopScanFeedback();
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraError("Camera is not supported in this browser.");
       return;
@@ -179,9 +300,26 @@ export default function GateKiosksPage() {
 
   const handleScan = (e: React.FormEvent) => {
     e.preventDefault();
-    if (qrInput.trim() && selectedKiosk) {
-      scanMutation.mutate(qrInput.trim());
+    const qrToken = getQrInputValue().trim();
+    if (qrToken) {
+      submitQrToken(qrToken);
     }
+  };
+
+  const handleQrInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    unlockDesktopScanFeedback();
+    const nextValue = e.target.value.trim();
+    setScannerProgress(nextValue.length);
+    if (COMPLETE_QR_TOKEN_PATTERN.test(nextValue)) {
+      submitQrToken(nextValue);
+    }
+  };
+
+  const handleQrInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    unlockDesktopScanFeedback();
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    submitQrToken(getQrInputValue());
   };
 
   useEffect(() => {
@@ -271,23 +409,50 @@ export default function GateKiosksPage() {
   }, []);
 
   return (
-    <div className="p-6 space-y-6 max-w-3xl mx-auto">
+    <div className="p-6 space-y-6 max-w-7xl mx-auto">
       {showScanPopup && popupResult?.success && (
-        <div className="fixed inset-x-0 top-4 z-50 px-4 pointer-events-none" data-testid="scan-success-popup">
-          <div className="mx-auto max-w-lg rounded-xl border border-green-200 bg-white shadow-xl dark:bg-card dark:border-green-800">
-            <div className="p-4 flex items-center gap-3">
-              <div className="shrink-0">
-                <CheckCircle className="h-7 w-7 text-green-600 dark:text-green-400" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 pointer-events-none" data-testid="scan-success-popup">
+          <div className="w-full max-w-md rounded-3xl border border-green-200 bg-white/95 shadow-2xl backdrop-blur dark:bg-card dark:border-green-800">
+            <div className="p-6 text-center space-y-4">
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-950/50">
+                <CheckCircle className="h-9 w-9 text-green-600 dark:text-green-400" />
               </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm text-muted-foreground">Scan Successful</p>
-                <p className="text-base font-semibold truncate">{popupResult.studentName || "Student"}</p>
-                <p className="text-sm text-muted-foreground truncate">{popupResult.message}</p>
+              <div className="space-y-1">
+                <p className="text-xs font-semibold uppercase tracking-[0.3em] text-green-700 dark:text-green-400">
+                  Scan Successful
+                </p>
+                <p className="text-2xl font-semibold leading-tight">{popupResult.studentName || "Student"}</p>
+                <p className="text-sm text-muted-foreground">{popupResult.message}</p>
               </div>
-              {popupResult.action && (
-                <Badge className="no-default-hover-elevate no-default-active-elevate shrink-0">
-                  {popupResult.action}
-                </Badge>
+              {(popupResult.action || popupResult.time) && (
+                <div className="flex items-center justify-center gap-2">
+                  {popupResult.action && (
+                    <Badge className="no-default-hover-elevate no-default-active-elevate">
+                      {popupResult.action}
+                    </Badge>
+                  )}
+                  {popupResult.time && (
+                    <Badge variant="outline" className="bg-white/80 dark:bg-transparent">
+                      {popupResult.time}
+                    </Badge>
+                  )}
+                </div>
+              )}
+              {popupResult.photoUrl && (
+                <div className="flex justify-center">
+                  <Avatar className="h-16 w-16 border-2 border-green-100 dark:border-green-900">
+                    <AvatarImage src={popupResult.photoUrl} alt={popupResult.studentName || "Student"} />
+                    <AvatarFallback>
+                      {(popupResult.studentName || "S")
+                        .split(" ")
+                        .filter(Boolean)
+                        .slice(0, 2)
+                        .map((n) => n[0])
+                        .join("")
+                        .toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                </div>
               )}
             </div>
           </div>
@@ -308,6 +473,7 @@ export default function GateKiosksPage() {
         </div>
       </div>
 
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.9fr)] lg:items-start">
       <Card>
         <CardContent className="p-4">
           <div className="space-y-3">
@@ -328,25 +494,75 @@ export default function GateKiosksPage() {
             </div>
 
             <form onSubmit={handleScan}>
-              <div className="flex gap-2">
-                <Input
+              <div
+                className="relative overflow-hidden rounded-2xl border border-sky-200 bg-[linear-gradient(135deg,rgba(14,165,233,0.10),rgba(255,255,255,0.95))] p-5 shadow-sm transition focus-within:border-sky-400 focus-within:shadow-md dark:border-sky-900 dark:bg-[linear-gradient(135deg,rgba(14,165,233,0.14),rgba(15,23,42,0.92))]"
+                onClick={focusQrInput}
+              >
+                <input
                   ref={inputRef}
-                  value={qrInput}
-                  onChange={(e) => setQrInput(e.target.value)}
+                  type="text"
+                  inputMode="none"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  onChange={handleQrInputChange}
+                  onKeyDown={handleQrInputKeyDown}
                   onBlur={focusQrInput}
-                  placeholder="Scan or enter QR code..."
-                  className="text-lg"
                   autoFocus
+                  className="absolute inset-0 opacity-0"
                   data-testid="input-qr-scan"
+                  aria-label="QR scanner capture field"
                 />
-                <Button
-                  type="submit"
-                  disabled={!qrInput.trim() || !selectedKiosk || scanMutation.isPending}
-                  data-testid="button-scan"
-                >
-                  <ScanLine className="h-4 w-4 mr-1" />
-                  Scan
-                </Button>
+
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-500 text-white shadow-sm">
+                        {scanMutation.isPending ? <ScanSearch className="h-6 w-6" /> : <ScanLine className="h-6 w-6" />}
+                      </div>
+                      <div>
+                        <p className="text-lg font-semibold">
+                          {scanMutation.isPending ? "Processing scan..." : "Ready to scan"}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          Present the student QR code to the scanner. No manual Enter needed.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="outline" className="bg-white/80 dark:bg-slate-950/20">
+                        {selectedKiosk ? "Scanner armed" : "Choose kiosk first"}
+                      </Badge>
+                      {scannerProgress > 0 && scannerProgress < 32 && (
+                        <Badge variant="outline" className="bg-white/80 dark:bg-slate-950/20">
+                          Reading code {scannerProgress}/32
+                        </Badge>
+                      )}
+                      {scannerProgress >= 32 && !scanMutation.isPending && (
+                        <Badge variant="outline" className="bg-white/80 dark:bg-slate-950/20">
+                          Code complete
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+
+                  <Button
+                    type="submit"
+                    variant="secondary"
+                    disabled={!selectedKiosk || scanMutation.isPending}
+                    data-testid="button-scan"
+                  >
+                    <ScanLine className="h-4 w-4 mr-1" />
+                    Manual Submit
+                  </Button>
+                </div>
+
+                <div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
+                  <Dot className="h-4 w-4 text-sky-500" />
+                  Tap anywhere in this panel if the external scanner stops focusing here.
+                </div>
               </div>
             </form>
 
@@ -395,80 +611,63 @@ export default function GateKiosksPage() {
                 </p>
               )}
             </div>
+
           </div>
         </CardContent>
       </Card>
-
-      {lastResult && (
-        <Card className={lastResult.success ? "border-green-200 dark:border-green-800" : "border-red-200 dark:border-red-800"}>
-          <CardContent className="p-6 text-center">
-            {lastResult.studentName && (
-              <div className="mb-4 flex justify-center">
-                <Avatar className="h-24 w-24 border">
-                  <AvatarImage src={lastResult.photoUrl || ""} alt={lastResult.studentName} />
-                  <AvatarFallback className="text-xl">
-                    {lastResult.studentName
-                      .split(" ")
-                      .filter(Boolean)
-                      .slice(0, 2)
-                      .map((n) => n[0])
-                      .join("")
-                      .toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-              </div>
-            )}
-            {lastResult.success ? (
-              <CheckCircle className="h-12 w-12 text-green-600 dark:text-green-400 mx-auto mb-3" />
-            ) : (
-              <XCircle className="h-12 w-12 text-red-600 dark:text-red-400 mx-auto mb-3" />
-            )}
-            <p className="text-lg font-semibold" data-testid="text-scan-result">
-              {lastResult.message}
-            </p>
-            {lastResult.studentName && (
-              <p className="text-muted-foreground mt-1">{lastResult.studentName}</p>
-            )}
-            {lastResult.action && (
-              <Badge className="mt-2 no-default-hover-elevate no-default-active-elevate">
-                {lastResult.action}
-              </Badge>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {recentScans.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <h3 className="text-sm font-semibold">Recent Scans</h3>
-          </CardHeader>
-          <CardContent className="p-0">
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-baseline justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold">Recent Scans</h2>
+              <p className="text-xs text-muted-foreground">Today at this kiosk</p>
+            </div>
+            <Badge variant="outline">{recentScans?.total ?? 0}</Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          {isLoadingRecentScans ? (
+            <p className="px-4 pb-4 text-sm text-muted-foreground">Loading today&apos;s scans…</p>
+          ) : recentScans?.records.length ? (
             <div className="divide-y">
-              {recentScans.map((scan, i) => (
-                <div key={i} className="flex items-center gap-3 px-4 py-3">
-                  {scan.success ? (
-                    <UserCheck className="h-4 w-4 text-green-600 dark:text-green-400 shrink-0" />
+              {recentScans.records.map((scan) => (
+                <div key={scan.id} className="flex items-center gap-3 px-4 py-3">
+                  {scan.eventType === "scan_ignored" ? (
+                    <XCircle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
                   ) : (
-                    <XCircle className="h-4 w-4 text-red-600 dark:text-red-400 shrink-0" />
+                    <UserCheck className="h-4 w-4 shrink-0 text-green-600 dark:text-green-400" />
                   )}
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">
-                      {scan.studentName || scan.message}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {scan.action || (scan.success ? "Success" : "Failed")}
-                    </p>
+                    <p className="truncate text-sm font-medium">{scan.studentName}</p>
+                    <p className="text-xs text-muted-foreground">{formatScanAction(scan.eventType)}</p>
                   </div>
-                  {scan.time && (
-                    <span className="text-xs text-muted-foreground">{scan.time}</span>
-                  )}
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {formatRecentScanTime(scan.occurredAt)}
+                  </span>
                 </div>
               ))}
             </div>
-          </CardContent>
-        </Card>
-      )}
+          ) : (
+            <p className="px-4 pb-4 text-sm text-muted-foreground">No scans recorded today.</p>
+          )}
+          {(recentScans?.total ?? 0) > RECENT_SCANS_PAGE_SIZE && (
+            <div className="flex items-center justify-between border-t px-4 py-3">
+              <span className="text-xs text-muted-foreground">
+                Page {recentScansPage} of {Math.ceil((recentScans?.total ?? 0) / RECENT_SCANS_PAGE_SIZE)}
+              </span>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => setRecentScansPage((page) => Math.max(1, page - 1))} disabled={recentScansPage === 1}>
+                  Previous
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setRecentScansPage((page) => page + 1)} disabled={recentScansPage >= Math.ceil((recentScans?.total ?? 0) / RECENT_SCANS_PAGE_SIZE)}>
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      </div>
     </div>
   );
 }

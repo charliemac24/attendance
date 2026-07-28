@@ -1,0 +1,20 @@
+node:events:497
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: spawn C:\Users\Charlie\Desktop\Github\attendance\node_modules\.bin\tsx ENOENT
+    at ChildProcess._handle.onexit (node:internal/child_process:286:19)
+    at onErrorNT (node:internal/child_process:484:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)
+Emitted 'error' event on ChildProcess instance at:
+    at ChildProcess._handle.onexit (node:internal/child_process:292:12)
+    at onErrorNT (node:internal/child_process:484:16)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21) {
+  errno: -4058,
+  code: 'ENOENT',
+  syscall: 'spawn C:\\Users\\Charlie\\Desktop\\Github\\attendance\\node_modules\\.bin\\tsx',
+  path: 'C:\\Users\\Charlie\\Desktop\\Github\\attendance\\node_modules\\.bin\\tsx',
+  spawnargs: [ 'watch', 'server/index.ts' ]
+}
+
+Node.js v20.18.0

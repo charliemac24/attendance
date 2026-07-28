@@ -186,18 +186,20 @@ export default function SettingsSchoolPage() {
                 data-testid="input-school-name"
               />
             </div>
-            <div className="space-y-2">
-              <Label>Login Slug</Label>
-              <Input
-                value={formData.loginSlug}
-                onChange={(e) => setFormData({ ...formData, loginSlug: e.target.value })}
-                placeholder="stars"
-                data-testid="input-school-login-slug"
-              />
-              <p className="text-sm text-muted-foreground">
-                Branded login URL: <span className="font-mono">/?school={formData.loginSlug || "stars"}</span>
-              </p>
-            </div>
+            {user?.role === "super_admin" && (
+              <div className="space-y-2">
+                <Label>Login Slug</Label>
+                <Input
+                  value={formData.loginSlug}
+                  onChange={(e) => setFormData({ ...formData, loginSlug: e.target.value })}
+                  placeholder="stars"
+                  data-testid="input-school-login-slug"
+                />
+                <p className="text-sm text-muted-foreground">
+                  Branded login URL: <span className="font-mono">/?school={formData.loginSlug || "stars"}</span>
+                </p>
+              </div>
+            )}
             <div className="space-y-2">
               <Label>Login Logo</Label>
               <Input
@@ -249,16 +251,23 @@ export default function SettingsSchoolPage() {
                 Students with no attendance record after this time can be marked absent by the cron route.
               </p>
             </div>
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center justify-between gap-3">
               <div>
                 <Label>SMS Notifications</Label>
                 <p className="text-sm text-muted-foreground">Enable SMS alerts for attendance</p>
               </div>
-              <Switch
-                checked={formData.smsEnabled}
-                onCheckedChange={(v) => setFormData({ ...formData, smsEnabled: v })}
-                data-testid="switch-sms-enabled"
-              />
+              <div className="flex items-center gap-3 pr-1">
+                <span
+                  className={`text-sm font-medium ${formData.smsEnabled ? "text-primary" : "text-muted-foreground"}`}
+                >
+                  {formData.smsEnabled ? "Enabled" : "Disabled"}
+                </span>
+                <Switch
+                  checked={formData.smsEnabled}
+                  onCheckedChange={(v) => setFormData({ ...formData, smsEnabled: v })}
+                  data-testid="switch-sms-enabled"
+                />
+              </div>
             </div>
             <div className="space-y-2">
               <Label>Minimum Scan Interval (seconds)</Label>

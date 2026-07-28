@@ -25,6 +25,7 @@ import type { Student, GradeLevel, Section } from "@shared/schema";
 type StudentWithRelations = Student & {
   gradeLevelName?: string;
   sectionName?: string;
+  currentDayStatus?: string | null;
 };
 
 type PrintableStudent = {
@@ -55,6 +56,19 @@ function compareStudentsByRosterOrder(a: StudentWithRelations, b: StudentWithRel
   if (firstNameDiff !== 0) return firstNameDiff;
 
   return a.studentNo.localeCompare(b.studentNo);
+}
+
+function getCurrentDayStatusBadge(status?: string | null) {
+  switch ((status || "").toLowerCase()) {
+    case "late":
+      return { label: "Late", className: "bg-amber-100 text-amber-800 hover:bg-amber-100" };
+    case "absent":
+      return { label: "Absent", className: "bg-red-100 text-red-700 hover:bg-red-100" };
+    case "excused":
+      return { label: "Excused", className: "bg-green-100 text-green-700 hover:bg-green-100" };
+    default:
+      return null;
+  }
 }
 
 function escapeHtml(value: string): string {
@@ -393,16 +407,23 @@ export function StudentsPage({ roster = "active" }: StudentsPageProps) {
 
   const bulkDeleteMutation = useMutation({
     mutationFn: async (ids: number[]) => {
-      for (const id of ids) {
-        await apiRequest("DELETE", `/api/students/${id}`);
-      }
+      const response = await apiRequest("POST", "/api/students/bulk-delete", {
+        studentIds: Array.from(new Set(ids)),
+      });
+      return response.json() as Promise<{ deletedStudentIds: number[]; missingStudentIds: number[] }>;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({
         predicate: (query) => (query.queryKey[0] as string)?.startsWith("/api/students"),
       });
       setSelectedIds([]);
-      toast({ title: "Students deleted" });
+      setBulkDeleteDialogOpen(false);
+      toast({
+        title: `${result.deletedStudentIds.length} student${result.deletedStudentIds.length === 1 ? "" : "s"} deleted`,
+        description: result.missingStudentIds.length > 0
+          ? `${result.missingStudentIds.length} already-missing student${result.missingStudentIds.length === 1 ? " was" : "s were"} skipped.`
+          : undefined,
+      });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -754,9 +775,24 @@ const openEdit = (student: StudentWithRelations) => {
                         {student.guardianPhone || "—"}
                       </td>
                       <td className="py-3 px-4">
-                        <Badge variant={student.isActive ? "default" : "secondary"} className="no-default-hover-elevate no-default-active-elevate">
-                          {student.isActive ? "Active" : "Inactive"}
-                        </Badge>
+                        {(() => {
+                          const currentDayStatusBadge = getCurrentDayStatusBadge(student.currentDayStatus);
+                          return (
+                            <div className="flex items-center gap-2">
+                              <Badge variant={student.isActive ? "default" : "secondary"} className="no-default-hover-elevate no-default-active-elevate">
+                                {student.isActive ? "Active" : "Inactive"}
+                              </Badge>
+                              {currentDayStatusBadge && (
+                                <Badge
+                                  variant="secondary"
+                                  className={currentDayStatusBadge.className}
+                                >
+                                  {currentDayStatusBadge.label}
+                                </Badge>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end gap-1">

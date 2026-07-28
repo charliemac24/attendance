@@ -21,6 +21,7 @@ export default function SchoolsPage() {
 
   const [formData, setFormData] = useState({
     name: "",
+    loginSlug: "",
     timezone: "Asia/Manila",
     lateTime: "08:00",
     cutoffTime: "09:00",
@@ -45,6 +46,7 @@ export default function SchoolsPage() {
     mutationFn: async () => {
       const payload: any = {
         name: formData.name,
+        loginSlug: formData.loginSlug,
         timezone: formData.timezone,
         lateTime: formData.lateTime,
         cutoffTime: formData.cutoffTime,
@@ -97,6 +99,7 @@ export default function SchoolsPage() {
     setEditing(null);
     setFormData({
       name: "",
+      loginSlug: "",
       timezone: "Asia/Manila",
       lateTime: "08:00",
       cutoffTime: "09:00",
@@ -119,6 +122,7 @@ export default function SchoolsPage() {
     setEditing(school);
     setFormData({
       name: school.name,
+      loginSlug: school.loginSlug || "",
       timezone: school.timezone,
       lateTime: school.lateTime?.substring(0, 5) || "08:00",
       cutoffTime: school.cutoffTime?.substring(0, 5) || "09:00",
@@ -233,6 +237,19 @@ export default function SchoolsPage() {
                 required
                 data-testid="input-school-name"
               />
+            </div>
+            <div className="space-y-2">
+              <Label>School Slug</Label>
+              <Input
+                value={formData.loginSlug}
+                onChange={(e) => setFormData({ ...formData, loginSlug: e.target.value })}
+                placeholder="stars-educational-center"
+                required
+                data-testid="input-school-login-slug"
+              />
+              <p className="text-xs text-muted-foreground">
+                Used for school-specific login URLs like <span className="font-mono">/?school={formData.loginSlug || "stars-educational-center"}</span>
+              </p>
             </div>
 
             {!editing && (

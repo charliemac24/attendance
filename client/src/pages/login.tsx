@@ -21,18 +21,19 @@ type SchoolBrandingResponse = {
 };
 
 export default function LoginPage() {
+  const initialSchoolParam = new URLSearchParams(window.location.search).get("school")?.trim() || "";
+  const [schoolId, setSchoolId] = useState(initialSchoolParam);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const { login } = useAuth();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  const schoolParam = new URLSearchParams(window.location.search).get("school")?.trim() || "";
 
   const { data: branding } = useQuery<SchoolBrandingResponse>({
-    queryKey: ["/api/public/school-branding", schoolParam],
+    queryKey: ["/api/public/school-branding", schoolId],
     queryFn: async () => {
-      const qs = schoolParam ? `?school=${encodeURIComponent(schoolParam)}` : "";
+      const qs = schoolId ? `?school=${encodeURIComponent(schoolId)}` : "";
       const res = await fetch(`/api/public/school-branding${qs}`, {
         credentials: "include",
       });
@@ -48,7 +49,7 @@ export default function LoginPage() {
     e.preventDefault();
     setIsLoading(true);
     try {
-      await login(username, password);
+      await login(username, password, schoolId || undefined);
       const params = new URLSearchParams(window.location.search);
       const currentPathWithSearch = `${window.location.pathname}${window.location.search}`;
       const redirectTo = params.get("redirect") || (window.location.pathname !== "/login" ? currentPathWithSearch : "/");
@@ -91,6 +92,18 @@ export default function LoginPage() {
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
+                <Label htmlFor="school-id">School ID</Label>
+                <Input
+                  id="school-id"
+                  type="text"
+                  value={schoolId}
+                  onChange={(e) => setSchoolId(e.target.value)}
+                  placeholder="Enter school ID"
+                  data-testid="input-school-id"
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-2">
                 <Label htmlFor="username">Username</Label>
                 <Input
                   id="username"
@@ -99,7 +112,6 @@ export default function LoginPage() {
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="Enter username"
                   data-testid="input-username"
-                  autoFocus
                 />
               </div>
               <div className="space-y-2">

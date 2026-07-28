@@ -8,7 +8,7 @@ export type AuthUser = User & { school?: School | null; selectedSchoolId?: numbe
 interface AuthContextType {
   user: AuthUser | null;
   isLoading: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string, schoolSlug?: string) => Promise<void>;
   logout: () => Promise<void>;
   currentSchool: School | null;
 }
@@ -27,11 +27,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     mutationFn: async ({
       username,
       password,
+      schoolSlug,
     }: {
       username: string;
       password: string;
+      schoolSlug?: string;
     }) => {
-      await apiRequest("POST", "/api/auth/login", { username, password });
+      await apiRequest("POST", "/api/auth/login", { username, password, schoolSlug });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
@@ -49,8 +51,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   });
 
   const login = useCallback(
-    async (username: string, password: string) => {
-      await loginMutation.mutateAsync({ username, password });
+    async (username: string, password: string, schoolSlug?: string) => {
+      await loginMutation.mutateAsync({ username, password, schoolSlug });
     },
     [loginMutation]
   );

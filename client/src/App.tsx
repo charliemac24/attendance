@@ -1,4 +1,5 @@
-import { Switch, Route } from "wouter";
+import { Link, Switch, Route } from "wouter";
+import { ScanLine } from "lucide-react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -6,7 +7,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SchoolSelector } from "@/components/school-selector";
-import { AuthProvider, useAuth } from "@/lib/auth";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { AuthProvider, hasRole, useAuth } from "@/lib/auth";
 import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/login";
 import DashboardPage from "@/pages/dashboard";
@@ -63,6 +66,24 @@ function AuthenticatedLayout() {
             <span className="text-xs text-muted-foreground ml-2 mr-2" data-testid="text-user-role">
               {user.role.replace(/_/g, " ")}
             </span>
+            {hasRole(user, "super_admin", "school_admin", "gate_staff") && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="icon"
+                    className="hidden md:inline-flex"
+                    data-testid="button-kiosk-scanner"
+                  >
+                    <Link href="/gate/kiosks" aria-label="Open Kiosk Scanner">
+                      <ScanLine />
+                    </Link>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Kiosk Scanner</TooltipContent>
+              </Tooltip>
+            )}
           </header>
           {user.role === "super_admin" && (
             <div className="border-b bg-muted/30 px-4 py-2">

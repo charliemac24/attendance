@@ -1,0 +1,64 @@
+Production Database Migration Status
+====================================
+
+Source compared: C:\Users\Charlie\Downloads\nssgsjhj_myo_attendance.sql
+Migration directory: C:\Users\Charlie\Desktop\Github\attendance\migrations
+Assessment date: 2026-07-28
+
+Summary
+-------
+The production schema already contains the table/column changes from migrations
+0000 through 0015, including the school-scoped username index change held in
+0014_school_scoped_usernames.sql. The only migration files whose intended schema
+changes are not present in the production dump are 0016, 0017, and 0018.
+
+Migrations not yet applied to the production schema
+---------------------------------------------------
+
+1. 0016_grade_level_friday_late_time_override.sql
+   Target table: grade_levels
+   Missing column to add:
+   - friday_late_time_override TIME NULL
+
+2. 0017_grade_level_weekday_late_time_overrides.sql
+   Target table: grade_levels
+   Missing column to add:
+   - late_time_overrides_by_weekday JSON NULL
+   Data update after adding the column:
+   - Copies any existing friday_late_time_override value into the JSON field
+     under the "Friday" key.
+
+3. 0018_section_late_time_overrides.sql
+   Target table: sections
+   Missing columns to add:
+   - late_time_override TIME NULL
+   - friday_late_time_override TIME NULL
+   - late_time_overrides_by_weekday JSON NULL
+
+Net production schema change
+----------------------------
+Applying the three outstanding migrations adds five nullable columns:
+- grade_levels: 2 columns
+- sections: 3 columns
+
+Migration tracking warning
+--------------------------
+The production __drizzle_migrations table contains only one recorded migration:
+0000_careless_serpent_society. This does NOT match the actual schema, which
+already includes the changes from later migrations through 0015.
+
+Therefore, do not run `npm run db:migrate` directly against production in its
+current state. Drizzle will treat 0001 through 0015 as pending and can fail when
+they attempt to create tables, columns, or constraints that already exist.
+
+Also, 0016, 0017, and 0018 are not listed in migrations/meta/_journal.json, so
+the normal Drizzle migration command will not select them for execution until the
+migration journal/history is corrected.
+
+Notes
+-----
+- 0014_school_scoped_usernames.sql does not add columns. Its intended indexes
+  already exist in the production dump: users_school_username_idx and
+  users_username_idx.
+- The outstanding columns are nullable, which makes their schema additions
+  backward-compatible with the currently deployed application.

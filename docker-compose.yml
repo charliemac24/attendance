@@ -34,6 +34,7 @@ services:
     ports:
       - "5100:5000"
     volumes:
+      - ./dist:/app/dist:ro
       - ./uploads:/app/uploads
       - ./tmp:/app/tmp
 

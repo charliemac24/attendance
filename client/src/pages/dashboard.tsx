@@ -16,6 +16,7 @@ import {
   HelpCircle,
   Calendar,
   Trash2,
+  MessageSquare,
 } from "lucide-react";
 import { formatDatabaseTime, isoDateWithOffset, localIsoDate } from "@/lib/utils";
 import type { School } from "@shared/schema";
@@ -30,6 +31,14 @@ interface DashboardData {
     absent: number;
     notCheckedIn: number;
     total: number;
+  };
+  smsCredits: {
+    month: string;
+    monthlyCredits: number;
+    usedCredits: number;
+    remainingCredits: number;
+    overageCount: number;
+    semaphoreBalance: number | null;
   };
   recentEvents: Array<{
     id: number;
@@ -284,6 +293,53 @@ export default function DashboardPage() {
               </Card>
             ))}
       </div>
+
+      {!isLoading && data?.smsCredits && (
+        <Card className="border-sky-300 bg-gradient-to-r from-sky-600 via-cyan-600 to-blue-700 text-white shadow-lg">
+          <CardContent className="p-6">
+            <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-start gap-4">
+                <div className="rounded-2xl bg-white/15 p-3">
+                  <MessageSquare className="h-7 w-7" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.24em] text-white/80">
+                    Semaphore SMS Credits
+                  </p>
+                  <div className="mt-2 flex items-end gap-3">
+                    <span className="text-5xl font-black leading-none">
+                      {data.smsCredits.semaphoreBalance ?? data.smsCredits.remainingCredits}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-white/85">
+                    {data.smsCredits.semaphoreBalance !== null
+                      ? "Live credit balance from Semaphore"
+                      : "Semaphore balance unavailable — showing the app's monthly quota remaining"}
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3 lg:min-w-[320px]">
+                <div className="rounded-xl border border-white/20 bg-white/10 p-4">
+                  <p className="text-xs uppercase tracking-wide text-white/75">App SMS Sent</p>
+                  <p className="mt-1 text-2xl font-bold">{data.smsCredits.usedCredits}</p>
+                </div>
+                <div className="rounded-xl border border-white/20 bg-white/10 p-4">
+                  <p className="text-xs uppercase tracking-wide text-white/75">App Quota Left</p>
+                  <p className="mt-1 text-2xl font-bold">{data.smsCredits.remainingCredits} / {data.smsCredits.monthlyCredits}</p>
+                </div>
+              </div>
+            </div>
+            <p className="mt-4 text-xs text-white/75">
+              {data.smsCredits.usedCredits} locally recorded successful SMS for {data.smsCredits.month}. App quota is separate from your Semaphore account balance.
+            </p>
+            {data.smsCredits.overageCount > 0 && (
+              <div className="mt-4 rounded-xl border border-red-200/40 bg-red-500/20 px-4 py-3 text-sm font-medium text-white">
+                Overage this month: {data.smsCredits.overageCount} SMS beyond included credits
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {!isLoading && (
         <p className="text-sm text-muted-foreground">

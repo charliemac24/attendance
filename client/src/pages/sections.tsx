@@ -12,7 +12,18 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Plus, Edit, Layers, Trash2 } from "lucide-react";
 import type { GradeLevel } from "@shared/schema";
 
-type SectionWithGrade = { id: number; name: string; schoolId: number; gradeLevelId: number; gradeLevelName?: string };
+type SectionWithGrade = {
+  id: number;
+  name: string;
+  schoolId: number;
+  gradeLevelId: number;
+  gradeLevelName?: string;
+  lateTimeOverride?: string | null;
+  fridayLateTimeOverride?: string | null;
+  lateTimeOverridesByWeekday?: Record<string, string | null> | null;
+};
+
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
 
 export default function SectionsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -21,6 +32,8 @@ export default function SectionsPage() {
   const [editing, setEditing] = useState<SectionWithGrade | null>(null);
   const [name, setName] = useState("");
   const [gradeLevelId, setGradeLevelId] = useState("");
+  const [lateTimeOverride, setLateTimeOverride] = useState("");
+  const [weekdayOverrides, setWeekdayOverrides] = useState<Record<string, string>>({});
   const { toast } = useToast();
 
   const { data: sections, isLoading } = useQuery<SectionWithGrade[]>({
@@ -33,16 +46,20 @@ export default function SectionsPage() {
 
   const saveMutation = useMutation({
     mutationFn: async () => {
+      const payload = {
+        name,
+        gradeLevelId: Number(gradeLevelId),
+        lateTimeOverride: lateTimeOverride || null,
+        lateTimeOverridesByWeekday: Object.fromEntries(
+          WEEKDAYS.map((weekday) => [weekday, weekdayOverrides[weekday] || null]).filter(([, value]) => value !== null),
+        ),
+      };
       if (editing) {
         await apiRequest("PATCH", `/api/sections/${editing.id}`, {
-          name,
-          gradeLevelId: Number(gradeLevelId),
+          ...payload,
         });
       } else {
-        await apiRequest("POST", "/api/sections", {
-          name,
-          gradeLevelId: Number(gradeLevelId),
-        });
+        await apiRequest("POST", "/api/sections", payload);
       }
     },
     onSuccess: () => {
@@ -90,6 +107,8 @@ export default function SectionsPage() {
             setEditing(null);
             setName("");
             setGradeLevelId("");
+            setLateTimeOverride("");
+            setWeekdayOverrides({});
             setDialogOpen(true);
           }}
           data-testid="button-add-section"
@@ -114,6 +133,12 @@ export default function SectionsPage() {
                   <div>
                     <span className="font-medium">{s.name}</span>
                     <span className="text-sm text-muted-foreground ml-2">({s.gradeLevelName})</span>
+                    {s.lateTimeOverride && <p className="text-xs text-muted-foreground">Late override: {s.lateTimeOverride.slice(0, 5)}</p>}
+                    {WEEKDAYS.map((weekday) => {
+                      const override = s.lateTimeOverridesByWeekday?.[weekday]
+                        || (weekday === "Friday" ? s.fridayLateTimeOverride : null);
+                      return override ? <p key={weekday} className="text-xs text-muted-foreground">{weekday} late override: {override.slice(0, 5)}</p> : null;
+                    })}
                   </div>
                   <div className="flex items-center gap-1">
                     <Button
@@ -123,6 +148,13 @@ export default function SectionsPage() {
                         setEditing(s);
                         setName(s.name);
                         setGradeLevelId(String(s.gradeLevelId));
+                        setLateTimeOverride(s.lateTimeOverride?.slice(0, 5) || "");
+                        setWeekdayOverrides(Object.fromEntries(WEEKDAYS.map((weekday) => [
+                          weekday,
+                          s.lateTimeOverridesByWeekday?.[weekday]?.slice(0, 5)
+                            || (weekday === "Friday" ? s.fridayLateTimeOverride?.slice(0, 5) : "")
+                            || "",
+                        ])));
                         setDialogOpen(true);
                       }}
                     >
@@ -145,7 +177,7 @@ export default function SectionsPage() {
       </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit Section" : "Add Section"}</DialogTitle>
           </DialogHeader>
@@ -180,6 +212,30 @@ export default function SectionsPage() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Late Time Override</Label>
+              <Input type="time" value={lateTimeOverride} onChange={(e) => setLateTimeOverride(e.target.value)} data-testid="input-section-late-time-override" />
+              <p className="text-xs text-muted-foreground">Leave blank to use the grade-level or school-wide late time.</p>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <Label>Late Time Overrides By Weekday</Label>
+                <p className="text-xs text-muted-foreground">Configure the section's schedule by weekday. Blank days use the section default above, then grade-level and school-wide settings.</p>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-3">
+                {WEEKDAYS.map((weekday) => (
+                  <div key={weekday} className="space-y-2">
+                    <Label>{weekday}</Label>
+                    <Input
+                      type="time"
+                      value={weekdayOverrides[weekday] || ""}
+                      onChange={(e) => setWeekdayOverrides((current) => ({ ...current, [weekday]: e.target.value }))}
+                      data-testid={`input-section-${weekday.toLowerCase()}-late-time-override`}
+                    />
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>

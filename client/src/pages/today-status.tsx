@@ -19,10 +19,12 @@ import {
   HelpCircle,
   LogIn,
   LogOut,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
 import type { GradeLevel, Section } from "@shared/schema";
+import { useAuth } from "@/lib/auth";
 
 const statusConfig: Record<string, { title: string; icon: any; description: string }> = {
   present: { title: "Checked Out Students", icon: UserCheck, description: "Students who completed check-out for the day" },
@@ -52,6 +54,7 @@ interface StatusPageData {
 }
 
 export default function TodayStatusPage() {
+  const { user } = useAuth();
   const [, params] = useRoute("/today/:status");
   const statusKey = params?.status || "present";
   const config = statusConfig[statusKey] || statusConfig.present;
@@ -66,6 +69,10 @@ export default function TodayStatusPage() {
   const [sectionFilter, setSectionFilter] = useState("all");
   const [page, setPage] = useState(1);
   const { toast } = useToast();
+  const canManualCheckIn = ["super_admin", "school_admin", "gate_staff", "teacher"].includes(user?.role || "");
+  const canManualCheckOut = ["super_admin", "school_admin", "gate_staff"].includes(user?.role || "");
+  const canMarkAbsent = ["super_admin", "school_admin", "gate_staff", "teacher"].includes(user?.role || "");
+  const canMarkExcused = ["super_admin", "school_admin", "gate_staff", "teacher"].includes(user?.role || "");
 
   const apiStatus = statusKey === "pending-checkout" ? "pending_checkout" : statusKey === "not-checked-in-yet" ? "not_checked_in" : statusKey;
 
@@ -103,6 +110,36 @@ export default function TodayStatusPage() {
         },
       });
       toast({ title: "Action completed" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const attendanceStatusAction = useMutation({
+    mutationFn: async ({
+      studentId,
+      status,
+      date,
+    }: {
+      studentId: number;
+      status: "absent" | "excused";
+      date: string;
+    }) => {
+      await apiRequest("POST", "/api/attendance/status", {
+        studentId,
+        status,
+        date,
+      });
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        predicate: (query) => {
+          const key = query.queryKey[0] as string;
+          return key?.startsWith("/api/today") || key?.startsWith("/api/dashboard") || key?.startsWith("/api/reports");
+        },
+      });
+      toast({ title: variables.status === "excused" ? "Student marked excused" : "Student marked absent" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -280,7 +317,7 @@ export default function TodayStatusPage() {
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end gap-1">
                           {(statusKey === "not-checked-in-yet" ||
-                            statusKey === "absent") && (
+                            statusKey === "absent") && canManualCheckIn && (
                             <Button
                               variant="outline"
                               size="sm"
@@ -297,7 +334,7 @@ export default function TodayStatusPage() {
                               In
                             </Button>
                           )}
-                          {statusKey === "pending-checkout" && (
+                          {statusKey === "pending-checkout" && canManualCheckOut && (
                             <Button
                               variant="outline"
                               size="sm"
@@ -312,6 +349,42 @@ export default function TodayStatusPage() {
                             >
                               <LogOut className="h-3 w-3 mr-1" />
                               Out
+                            </Button>
+                          )}
+                          {statusKey === "not-checked-in-yet" && canMarkAbsent && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() =>
+                                attendanceStatusAction.mutate({
+                                  studentId: record.studentId,
+                                  status: "absent",
+                                  date: selectedDate,
+                                })
+                              }
+                              disabled={attendanceStatusAction.isPending}
+                              data-testid={`button-absent-${record.studentId}`}
+                            >
+                              <UserX className="h-3 w-3 mr-1" />
+                              Absent
+                            </Button>
+                          )}
+                          {(statusKey === "not-checked-in-yet" || statusKey === "absent") && canMarkExcused && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() =>
+                                attendanceStatusAction.mutate({
+                                  studentId: record.studentId,
+                                  status: "excused",
+                                  date: selectedDate,
+                                })
+                              }
+                              disabled={attendanceStatusAction.isPending}
+                              data-testid={`button-excused-${record.studentId}`}
+                            >
+                              <CheckCircle2 className="h-3 w-3 mr-1" />
+                              Excused
                             </Button>
                           )}
                         </div>

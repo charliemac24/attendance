@@ -29,6 +29,9 @@ const SMS_NETWORK_DUPLICATE_LOOKBACK_DAYS = 1;
 const SMS_NOTIFICATION_EXPIRY_HOURS = 24;
 const SMS_PENDING_QUEUE_STATUSES = ["queued", "retry_wait", "processing"] as const;
 const DEFAULT_CRON_SECRET = "attendance-cron-a7k9m2x4p8q1";
+// Semaphore allows the account endpoint to be called only twice per minute.
+const SEMAPHORE_ACCOUNT_CACHE_TTL_MS = 60_000;
+const semaphoreAccountBalanceCache = new Map<string, { balance: number; fetchedAt: number }>();
 
 declare module "express-session" {
   interface SessionData {
@@ -84,6 +87,27 @@ function filterRecordsToSectionScope<T extends { sectionId?: number | null }>(re
   if (sectionIds === null) return records;
   const allowed = new Set(sectionIds);
   return records.filter((record) => record.sectionId !== null && record.sectionId !== undefined && allowed.has(Number(record.sectionId)));
+}
+
+function emptyDashboardResponse(date: string) {
+  return {
+    date,
+    kpis: { checkedOut: 0, lateArrivals: 0, onCampus: 0, absent: 0, notCheckedIn: 0, total: 0 },
+    smsCredits: { month: "", monthlyCredits: 0, usedCredits: 0, remainingCredits: 0, overageCount: 0, semaphoreBalance: null },
+    recentEvents: [],
+    gradeBreakdown: [],
+    missedCheckoutsPreviousDay: [],
+  };
+}
+
+function emptyAttendanceIntelligenceResponse() {
+  return {
+    window: { startDate: "", endDate: "" },
+    summary: { totalStudents: 0, atRiskCount: 0 },
+    atRiskStudents: [],
+    classInsights: [],
+    gradeInsights: [],
+  };
 }
 
 function normalizePhone(phone: string): string {
@@ -396,6 +420,11 @@ class SemaphoreRequestError extends Error {
   }
 }
 
+export function formatPhilippineDateTime(value: Date | string | null | undefined): string | null {
+  const localDateTime = formatDatabaseDateTime(value);
+  return localDateTime ? `${localDateTime.replace(" ", "T")}+08:00` : null;
+}
+
 type AttendanceSmsTemplateType =
   | "check_in"
   | "check_out"
@@ -540,6 +569,46 @@ async function sendSemaphoreMessage(apiKey: string, senderName: string | null, t
     rateLimitRemaining: getHeaderInt(response.headers, "X-RateLimit-Remaining"),
     rateLimitLimit: getHeaderInt(response.headers, "X-RateLimit-Limit"),
   };
+}
+
+async function getSemaphoreCreditBalance(apiKey: string): Promise<number | null> {
+  const cached = semaphoreAccountBalanceCache.get(apiKey);
+  if (cached && Date.now() - cached.fetchedAt < SEMAPHORE_ACCOUNT_CACHE_TTL_MS) {
+    return cached.balance;
+  }
+
+  try {
+    const url = new URL("https://api.semaphore.co/api/v4/account");
+    url.searchParams.set("apikey", apiKey);
+    const response = await fetch(url.toString(), { method: "GET" });
+    const rawText = await response.text();
+    let parsed: any = null;
+    try {
+      parsed = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      parsed = rawText;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Semaphore account request failed (${response.status})`);
+    }
+
+    // The v4 endpoint returns an account object. Accept a one-item array too,
+    // so a harmless provider response-shape change does not show a false balance.
+    const account = Array.isArray(parsed) ? parsed[0] : parsed;
+    const balance = Number(account?.credit_balance);
+    if (!Number.isFinite(balance) || balance < 0) {
+      throw new Error("Semaphore account response did not contain a valid credit balance");
+    }
+
+    semaphoreAccountBalanceCache.set(apiKey, { balance, fetchedAt: Date.now() });
+    return balance;
+  } catch (err: any) {
+    // Keep the dashboard usable during a temporary provider/API failure. A stale
+    // provider value is still more meaningful than substituting the local quota.
+    console.warn("Unable to retrieve Semaphore account balance", { message: err?.message });
+    return cached?.balance ?? null;
+  }
 }
 
 function annotateMissedCheckoutFlag<T extends { studentId: number }>(
@@ -1279,22 +1348,75 @@ function isLateStoredDateTimeForSchool(checkInTime: Date | string, lateTime: str
   return hour > lateHour || (hour === lateHour && minute > lateMinute);
 }
 
-async function getEffectiveLateTimeForStudent(student: { gradeLevelId?: number | null }, school: { lateTime: string }) {
-  if (!student.gradeLevelId) {
-    return school.lateTime;
+function getWeekdayNameInTimezone(date: Date, timezone?: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone || PHILIPPINE_TIMEZONE,
+      weekday: "long",
+    }).format(date);
+  } catch {
+    return date.toLocaleDateString("en-US", { weekday: "long" });
   }
+}
 
-  const gradeLevel = await storage.getGradeLevel(Number(student.gradeLevelId));
-  return gradeLevel?.lateTimeOverride || school.lateTime;
+function getWeekdayNameForIsoDate(date: string, timezone?: string): string {
+  const probe = new Date(`${date}T12:00:00Z`);
+  return getWeekdayNameInTimezone(probe, timezone);
+}
+
+type LateTimeOverrides = {
+    lateTimeOverride?: string | null;
+    fridayLateTimeOverride?: string | null;
+    lateTimeOverridesByWeekday?: Record<string, string | null> | null;
+};
+
+export function resolveConfiguredLateTimeOverride(overrides: LateTimeOverrides | undefined, weekdayName: string) {
+  if (!overrides) return undefined;
+  const weekdayOverride = overrides.lateTimeOverridesByWeekday?.[weekdayName];
+  if (weekdayOverride) {
+    return weekdayOverride;
+  }
+  if (weekdayName === "Friday" && overrides.fridayLateTimeOverride) {
+    return overrides.fridayLateTimeOverride;
+  }
+  return overrides.lateTimeOverride || undefined;
+}
+
+export function resolveEffectiveLateTime(
+  section: LateTimeOverrides | undefined,
+  gradeLevel: LateTimeOverrides | undefined,
+  schoolLateTime: string,
+  weekdayName: string,
+) {
+  return resolveConfiguredLateTimeOverride(section, weekdayName)
+    || resolveConfiguredLateTimeOverride(gradeLevel, weekdayName)
+    || schoolLateTime;
+}
+
+async function getEffectiveLateTimeForStudent(
+  student: { gradeLevelId?: number | null; sectionId?: number | null },
+  school: { lateTime: string; timezone?: string },
+  now: Date,
+) {
+  const weekdayName = getWeekdayNameInTimezone(now, school.timezone);
+  const section = student.sectionId ? await storage.getSection(Number(student.sectionId)) : undefined;
+  const gradeLevel = student.gradeLevelId ? await storage.getGradeLevel(Number(student.gradeLevelId)) : undefined;
+  return resolveEffectiveLateTime(section, gradeLevel, school.lateTime, weekdayName);
 }
 
 function getEffectiveLateTimeForAttendanceRecord(
-  record: { gradeLevelId?: number | null },
+  record: { gradeLevelId?: number | null; sectionId?: number | null },
   schoolLateTime: string,
-  gradeLateTimes: Map<number, string | null>,
+  gradeLateTimes: Map<number, LateTimeOverrides>,
+  sectionLateTimes: Map<number, LateTimeOverrides>,
+  weekdayName: string,
 ) {
-  if (!record.gradeLevelId) return schoolLateTime;
-  return gradeLateTimes.get(Number(record.gradeLevelId)) || schoolLateTime;
+  return resolveEffectiveLateTime(
+    record.sectionId ? sectionLateTimes.get(Number(record.sectionId)) : undefined,
+    record.gradeLevelId ? gradeLateTimes.get(Number(record.gradeLevelId)) : undefined,
+    schoolLateTime,
+    weekdayName,
+  );
 }
 
 async function syncDailyLateStatusesForDate(
@@ -1307,8 +1429,26 @@ async function syncDailyLateStatusesForDate(
 
   const gradeLevelsForSchool = await storage.getGradeLevels(schoolId);
   const gradeLateTimes = new Map(
-    gradeLevelsForSchool.map((gradeLevel) => [gradeLevel.id, gradeLevel.lateTimeOverride || null] as const),
+    gradeLevelsForSchool.map((gradeLevel) => [
+      gradeLevel.id,
+      {
+        lateTimeOverride: gradeLevel.lateTimeOverride || null,
+        fridayLateTimeOverride: gradeLevel.fridayLateTimeOverride || null,
+        lateTimeOverridesByWeekday: gradeLevel.lateTimeOverridesByWeekday || null,
+      },
+    ] as const),
   );
+  const sectionLateTimes = new Map(
+    (await storage.getSections(schoolId)).map((section) => [
+      section.id,
+      {
+        lateTimeOverride: section.lateTimeOverride || null,
+        fridayLateTimeOverride: section.fridayLateTimeOverride || null,
+        lateTimeOverridesByWeekday: section.lateTimeOverridesByWeekday || null,
+      },
+    ] as const),
+  );
+  const weekdayName = getWeekdayNameForIsoDate(date, school.timezone);
 
   let updated = 0;
   for (const record of records) {
@@ -1316,7 +1456,7 @@ async function syncDailyLateStatusesForDate(
       record.checkInTime &&
       isLateStoredDateTimeForSchool(
         record.checkInTime,
-        getEffectiveLateTimeForAttendanceRecord(record, school.lateTime, gradeLateTimes),
+        getEffectiveLateTimeForAttendanceRecord(record, school.lateTime, gradeLateTimes, sectionLateTimes, weekdayName),
       ),
     );
 
@@ -1393,8 +1533,29 @@ export async function registerRoutes(
   // Auth
   app.post("/api/auth/login", async (req, res) => {
     try {
-      const { username, password } = req.body;
-      const user = await storage.getUserByUsername(username);
+      const username = String(req.body?.username || "").trim();
+      const password = String(req.body?.password || "");
+      const loginSlug = String(req.body?.schoolSlug || req.body?.loginSlug || "").trim().toLowerCase();
+      let user = undefined as any;
+
+      if (loginSlug) {
+        const school = await storage.getSchoolByLoginSlug(loginSlug);
+        if (!school) {
+          return res.status(401).json({ message: "Invalid school login" });
+        }
+        user = await storage.getUserByUsernameAndSchoolId(username, school.id);
+      } else {
+        const matches = await storage.getUsersByUsername(username);
+        const superAdminUser = matches.find((entry) => entry.role === "super_admin" && entry.schoolId == null);
+        if (superAdminUser) {
+          user = superAdminUser;
+        } else if (matches.length === 1) {
+          user = matches[0];
+        } else if (matches.length > 1) {
+          return res.status(401).json({ message: "Use your school login URL to sign in with this username" });
+        }
+      }
+
       if (!user) return res.status(401).json({ message: "Invalid credentials" });
       const valid = await bcrypt.compare(password, user.password);
       if (!valid) return res.status(401).json({ message: "Invalid credentials" });
@@ -1550,8 +1711,8 @@ export async function registerRoutes(
       const { username, password, fullName, email, role, schoolId: targetSchoolId, teacherSectionIds } = req.body;
 
       if (currentUser.role === "school_admin") {
-        if (!["gate_staff", "teacher"].includes(role)) {
-          return res.status(403).json({ message: "School admin can only create gate_staff or teacher accounts" });
+        if (!["school_admin", "gate_staff", "teacher"].includes(role)) {
+          return res.status(403).json({ message: "School admin can only create school_admin, gate_staff, or teacher accounts" });
         }
         if (targetSchoolId && targetSchoolId !== currentUser.schoolId) {
           return res.status(403).json({ message: "Cannot create users for another school" });
@@ -1613,8 +1774,8 @@ export async function registerRoutes(
       }
 
       if (currentUser.role === "school_admin" && req.body.role) {
-        if (!["gate_staff", "teacher"].includes(req.body.role)) {
-          return res.status(403).json({ message: "School admin can only assign gate_staff or teacher roles" });
+        if (!["school_admin", "gate_staff", "teacher"].includes(req.body.role)) {
+          return res.status(403).json({ message: "School admin can only assign school_admin, gate_staff, or teacher roles" });
         }
       }
 
@@ -1700,27 +1861,31 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) {
-        return res.json({
-          date: "",
-          kpis: { checkedOut: 0, lateArrivals: 0, onCampus: 0, absent: 0, notCheckedIn: 0, total: 0 },
-          recentEvents: [],
-          gradeBreakdown: [],
-        });
+        return res.json(emptyDashboardResponse(""));
       }
 
       const school = await storage.getSchool(schoolId);
       const date = (req.query.date as string) || getTodayIsoInTimezone(school?.timezone);
+      const sectionScope = await getSectionScopeForUser(req, schoolId);
+      if (sectionScope && sectionScope.length === 0) {
+        return res.json(emptyDashboardResponse(date));
+      }
       if (school) {
         await syncDailyLateStatusesForDate(schoolId, date, school);
       }
-      const kpis = await storage.getDashboardKpis(schoolId, date);
-      const recentEvents = await storage.getRecentEvents(schoolId, 10);
-      const gradeBreakdown = await storage.getGradeAttendanceBreakdown(schoolId, date);
+      const kpis = await storage.getDashboardKpis(schoolId, date, sectionScope);
+      const localSmsCredits = await storage.getDashboardSmsCredits(schoolId);
+      const semaphoreBalance = school?.smsProvider === "semaphore" && hasNonEmptyString(school.semaphoreApiKey)
+        ? await getSemaphoreCreditBalance(school.semaphoreApiKey)
+        : null;
+      const smsCredits = { ...localSmsCredits, semaphoreBalance };
+      const recentEvents = await storage.getRecentEvents(schoolId, 10, sectionScope);
+      const gradeBreakdown = await storage.getGradeAttendanceBreakdown(schoolId, date, sectionScope);
       const previousDate = shiftIsoDate(date, -1);
-      const missedCheckoutsPreviousDay = (await storage.getMissedCheckoutRecordsByDate(schoolId, previousDate))
+      const missedCheckoutsPreviousDay = (await storage.getMissedCheckoutRecordsByDate(schoolId, previousDate, sectionScope))
         .map((record: any) => normalizeAttendanceRecordTimes(record));
 
-      res.json({ date, kpis, recentEvents, gradeBreakdown, missedCheckoutsPreviousDay });
+      res.json({ date, kpis, smsCredits, recentEvents, gradeBreakdown, missedCheckoutsPreviousDay });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -1742,18 +1907,16 @@ export async function registerRoutes(
     try {
       const schoolId = await getSchoolId(req);
       if (!schoolId) {
-        return res.json({
-          window: { startDate: "", endDate: "" },
-          summary: { totalStudents: 0, atRiskCount: 0 },
-          atRiskStudents: [],
-          classInsights: [],
-          gradeInsights: [],
-        });
+        return res.json(emptyAttendanceIntelligenceResponse());
       }
 
       const school = await storage.getSchool(schoolId);
       const date = (req.query.date as string) || getTodayIsoInTimezone(school?.timezone);
-      const intelligence = await storage.getAttendanceIntelligence(schoolId, date);
+      const sectionScope = await getSectionScopeForUser(req, schoolId);
+      if (sectionScope && sectionScope.length === 0) {
+        return res.json(emptyAttendanceIntelligenceResponse());
+      }
+      const intelligence = await storage.getAttendanceIntelligence(schoolId, date, sectionScope);
       res.json(intelligence);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -2076,6 +2239,24 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/students/bulk-delete", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(400).json({ message: "No school context" });
+
+      const studentIds = Array.isArray(req.body?.studentIds)
+        ? Array.from(new Set<number>(req.body.studentIds.map((value: unknown) => Number(value))))
+        : [];
+      if (studentIds.length === 0 || studentIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+        return res.status(400).json({ message: "Select at least one valid student." });
+      }
+
+      res.json(await storage.bulkDeleteStudents(schoolId, studentIds));
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.delete("/api/students/:id", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
     try {
       const schoolId = await getSchoolId(req);
@@ -2300,7 +2481,14 @@ export async function registerRoutes(
 
   app.patch("/api/sections/:id", requireAuth, requireRole("super_admin", "school_admin"), async (req, res) => {
     try {
-      res.json(await storage.updateSection(Number(req.params.id), req.body));
+      const updated = await storage.updateSection(Number(req.params.id), req.body);
+      if (updated) {
+        const school = await storage.getSchool(updated.schoolId);
+        if (school) {
+          await syncDailyLateStatusesForDate(updated.schoolId, getTodayIsoInTimezone(school.timezone), school);
+        }
+      }
+      res.json(updated);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -2348,6 +2536,43 @@ export async function registerRoutes(
     try {
       await storage.deleteKiosk(Number(req.params.id));
       res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.get("/api/kiosk/recent-scans", requireAuth, requireRole("super_admin", "school_admin", "gate_staff"), async (req, res) => {
+    try {
+      const schoolId = await getSchoolId(req);
+      if (!schoolId) return res.status(400).json({ message: "No school context" });
+
+      const kioskLocationId = Number(req.query.kioskLocationId);
+      const page = Math.max(1, Number(req.query.page) || 1);
+      const pageSize = Math.min(50, Math.max(1, Number(req.query.pageSize) || 10));
+      if (!Number.isInteger(kioskLocationId) || kioskLocationId <= 0) {
+        return res.status(400).json({ message: "Select a valid kiosk location." });
+      }
+
+      const kiosk = await storage.getKiosk(kioskLocationId);
+      if (!kiosk || kiosk.schoolId !== schoolId) {
+        return res.status(404).json({ message: "Kiosk location not found." });
+      }
+
+      const school = await storage.getSchool(schoolId);
+      const recentScans = await storage.getKioskRecentScans(
+        schoolId,
+        kioskLocationId,
+        getTodayIsoInTimezone(school?.timezone),
+        page,
+        pageSize,
+      );
+      res.json({
+        ...recentScans,
+        records: recentScans.records.map((scan) => ({
+          ...scan,
+          occurredAt: formatPhilippineDateTime(scan.occurredAt),
+        })),
+      });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -2458,7 +2683,7 @@ export async function registerRoutes(
       markStudentScanNow(student.id, now.getTime());
 
       if (!existingAttendance) {
-        const effectiveLateTime = await getEffectiveLateTimeForStudent(student, school);
+        const effectiveLateTime = await getEffectiveLateTimeForStudent(student, school, now);
         const isLate = isLateNowForSchool(now, effectiveLateTime, school.timezone);
 
         const status = isLate ? "late" : "pending_checkout";
@@ -2591,11 +2816,24 @@ export async function registerRoutes(
   });
 
   // Manual Attendance
-  app.post("/api/attendance/manual", requireAuth, requireRole("super_admin", "school_admin", "gate_staff"), async (req, res) => {
+  app.post("/api/attendance/manual", requireAuth, requireRole("super_admin", "school_admin", "gate_staff", "teacher"), async (req, res) => {
     try {
       const { studentId, action, timestamp } = req.body;
+      const currentUser = req.session.userId ? await storage.getUserById(req.session.userId) : null;
+      if (!currentUser) return res.status(401).json({ message: "Unauthorized" });
+      if (currentUser.role === "teacher" && action !== "check_in") {
+        return res.status(403).json({ message: "Teachers can only record manual check-in" });
+      }
+
       const student = await storage.getStudent(studentId);
       if (!student) return res.status(404).json({ message: "Student not found" });
+
+      if (currentUser.role === "teacher") {
+        const teacherSections = await storage.getTeacherSectionIds(currentUser.id);
+        if (!student.sectionId || !teacherSections.includes(student.sectionId)) {
+          return res.status(403).json({ message: "You can only update students in your assigned sections" });
+        }
+      }
 
       const schoolId = student.schoolId;
       const school = await storage.getSchool(schoolId);
@@ -2614,7 +2852,7 @@ export async function registerRoutes(
           return res.status(400).json({ message: "Student already has attendance for today" });
         }
 
-        const effectiveLateTime = await getEffectiveLateTimeForStudent(student, school);
+        const effectiveLateTime = await getEffectiveLateTimeForStudent(student, school, now);
         const isLate = isLateNowForSchool(now, effectiveLateTime, school.timezone);
         const status = isLate ? "late" : "pending_checkout";
 
@@ -2702,8 +2940,8 @@ export async function registerRoutes(
 
       const currentUser = req.session.userId ? await storage.getUserById(req.session.userId) : null;
       if (!currentUser) return res.status(401).json({ message: "Unauthorized" });
-      if (currentUser.role === "teacher" && status !== "absent") {
-        return res.status(403).json({ message: "Teachers can only mark students absent" });
+      if (currentUser.role === "teacher" && !["absent", "excused"].includes(status)) {
+        return res.status(403).json({ message: "Teachers can only mark students absent or excused" });
       }
 
       const student = await storage.getStudent(Number(studentId));
@@ -3324,8 +3562,10 @@ export async function registerRoutes(
   app.post("/api/schools", requireAuth, requireRole("super_admin"), async (req, res) => {
     try {
       const { adminUsername, adminPassword, adminFullName, adminEmail, ...schoolData } = req.body;
+      const normalizedLoginSlug = slugifySchoolLabel(String(schoolData.loginSlug || schoolData.name || ""));
       const school = await storage.createSchool({
         ...schoolData,
+        loginSlug: normalizedLoginSlug || null,
         timezone: PHILIPPINE_TIMEZONE,
         smsSendMode: "ALL_MOVEMENTS",
         allowMultipleScans: true,
@@ -3352,8 +3592,12 @@ export async function registerRoutes(
 
   app.patch("/api/schools/:id", requireAuth, requireRole("super_admin"), async (req, res) => {
     try {
+      const normalizedLoginSlug = req.body.loginSlug === undefined
+        ? undefined
+        : slugifySchoolLabel(String(req.body.loginSlug || ""));
       const payload = {
         ...req.body,
+        loginSlug: normalizedLoginSlug === undefined ? req.body.loginSlug : normalizedLoginSlug || null,
         timezone: PHILIPPINE_TIMEZONE,
         smsSendMode: "ALL_MOVEMENTS",
         allowMultipleScans: true,
@@ -3596,15 +3840,15 @@ export async function registerRoutes(
       const schoolId = await getSchoolId(req);
       if (!schoolId) return res.status(404).json({ message: "No school" });
       const user = await storage.getUserById(req.session.userId!);
+      if (!user || (user.role !== "super_admin" && user.role !== "school_admin")) {
+        return res.status(403).json({ message: "Forbidden" });
+      }
       const sectionScope = await getSectionScopeForUser(req, schoolId);
       const { startDate, endDate, grade, section } = req.query;
       const { type } = req.params;
 
       let data: any[];
       if (type === "sms-usage") {
-        if (user?.role === "teacher") {
-          return res.status(403).json({ message: "Forbidden" });
-        }
         data = await storage.getSmsUsageReport(
           schoolId,
           startDate as string || new Date().toISOString().split("T")[0],

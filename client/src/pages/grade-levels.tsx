@@ -12,6 +12,8 @@ import { Plus, Edit, GraduationCap, Trash2 } from "lucide-react";
 import { normalizeGradeLevelName } from "@shared/grade-levels";
 import type { GradeLevel } from "@shared/schema";
 
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
+
 export default function GradeLevelsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -19,19 +21,39 @@ export default function GradeLevelsPage() {
   const [editing, setEditing] = useState<GradeLevel | null>(null);
   const [name, setName] = useState("");
   const [lateTimeOverride, setLateTimeOverride] = useState("");
+  const [weekdayOverrides, setWeekdayOverrides] = useState<Record<string, string>>({});
   const { toast } = useToast();
 
-  const { data: gradeLevels, isLoading } = useQuery<GradeLevel[]>({
+  const { data: gradeLevels, isLoading, error } = useQuery<GradeLevel[]>({
     queryKey: ["/api/grade-levels"],
   });
 
   const displayName = (value: string) => normalizeGradeLevelName(value) || value;
+  const getWeekdayOverride = (gradeLevel: GradeLevel, weekday: string) => {
+    const weekdayMap =
+      gradeLevel.lateTimeOverridesByWeekday &&
+      typeof gradeLevel.lateTimeOverridesByWeekday === "object" &&
+      !Array.isArray(gradeLevel.lateTimeOverridesByWeekday)
+        ? gradeLevel.lateTimeOverridesByWeekday
+        : null;
+    const override = weekdayMap?.[weekday];
+    if (typeof override === "string" && override.trim()) {
+      return override;
+    }
+    if (weekday === "Friday" && typeof gradeLevel.fridayLateTimeOverride === "string" && gradeLevel.fridayLateTimeOverride.trim()) {
+      return gradeLevel.fridayLateTimeOverride;
+    }
+    return null;
+  };
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       const payload = {
         name: displayName(name),
         lateTimeOverride: lateTimeOverride || null,
+        lateTimeOverridesByWeekday: Object.fromEntries(
+          WEEKDAYS.map((weekday) => [weekday, weekdayOverrides[weekday] || null]).filter(([, value]) => value !== null),
+        ),
       };
       if (editing) {
         await apiRequest("PATCH", `/api/grade-levels/${editing.id}`, payload);
@@ -45,6 +67,7 @@ export default function GradeLevelsPage() {
       setEditing(null);
       setName("");
       setLateTimeOverride("");
+      setWeekdayOverrides({});
       toast({ title: editing ? "Grade level updated" : "Grade level created" });
     },
     onError: (err: any) => {
@@ -86,6 +109,7 @@ export default function GradeLevelsPage() {
             setEditing(null);
             setName("");
             setLateTimeOverride("");
+            setWeekdayOverrides({});
             setDialogOpen(true);
           }}
           data-testid="button-add-grade-level"
@@ -97,7 +121,14 @@ export default function GradeLevelsPage() {
 
       <Card>
         <CardContent className="p-0">
-          {isLoading ? (
+          {error ? (
+            <div className="p-6">
+              <p className="font-medium">Unable to load grade levels</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                {error instanceof Error ? error.message : "Unknown error"}
+              </p>
+            </div>
+          ) : isLoading ? (
             <div className="p-6 space-y-3">
               {Array.from({ length: 3 }).map((_, i) => (
                 <Skeleton key={i} className="h-12 w-full" />
@@ -112,6 +143,14 @@ export default function GradeLevelsPage() {
                     {gl.lateTimeOverride ? (
                       <p className="text-xs text-muted-foreground">Late override: {gl.lateTimeOverride.slice(0, 5)}</p>
                     ) : null}
+                    {WEEKDAYS.map((weekday) => {
+                      const override = getWeekdayOverride(gl, weekday);
+                      return override ? (
+                        <p key={weekday} className="text-xs text-muted-foreground">
+                          {weekday} late override: {override.slice(0, 5)}
+                        </p>
+                      ) : null;
+                    })}
                   </div>
                   <div className="flex items-center gap-1">
                     <Button
@@ -121,6 +160,14 @@ export default function GradeLevelsPage() {
                         setEditing(gl);
                         setName(displayName(gl.name));
                         setLateTimeOverride(gl.lateTimeOverride?.slice(0, 5) || "");
+                        setWeekdayOverrides(
+                          Object.fromEntries(
+                            WEEKDAYS.map((weekday) => [
+                              weekday,
+                              getWeekdayOverride(gl, weekday)?.slice(0, 5) || "",
+                            ]),
+                          ),
+                        );
                         setDialogOpen(true);
                       }}
                       data-testid={`button-edit-grade-${gl.id}`}
@@ -183,6 +230,27 @@ export default function GradeLevelsPage() {
               <p className="text-sm text-muted-foreground">
                 Leave blank to use the school-wide late time.
               </p>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <Label>Late Time Overrides By Weekday</Label>
+                <p className="text-sm text-muted-foreground">
+                  Configure only the days with a different schedule. Blank days use the grade default above.
+                </p>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-3">
+                {WEEKDAYS.map((weekday) => (
+                  <div key={weekday} className="space-y-2">
+                    <Label>{weekday}</Label>
+                    <Input
+                      type="time"
+                      value={weekdayOverrides[weekday] || ""}
+                      onChange={(e) => setWeekdayOverrides((current) => ({ ...current, [weekday]: e.target.value }))}
+                      data-testid={`input-grade-level-${weekday.toLowerCase()}-late-time-override`}
+                    />
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>

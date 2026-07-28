@@ -74,7 +74,7 @@ export default function UsersPage() {
 
   const availableRoles = isSuperAdmin
     ? ["super_admin", "school_admin", "gate_staff", "teacher"]
-    : ["gate_staff", "teacher"];
+    : ["school_admin", "gate_staff", "teacher"];
 
   const saveMutation = useMutation({
     mutationFn: async () => {

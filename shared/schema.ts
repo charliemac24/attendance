@@ -44,13 +44,16 @@ export const schools = mysqlTable("schools", {
 
 export const users = mysqlTable("users", {
   id: int("id").autoincrement().primaryKey(),
-  username: varchar("username", { length: 64 }).notNull().unique(),
+  username: varchar("username", { length: 64 }).notNull(),
   password: varchar("password", { length: 255 }).notNull(),
   email: varchar("email", { length: 191 }),
   fullName: varchar("full_name", { length: 191 }).notNull(),
   role: varchar("role", { length: 32 }).notNull().default("teacher"),
   schoolId: int("school_id").references(() => schools.id),
-});
+}, (table) => [
+  uniqueIndex("users_school_username_idx").on(table.schoolId, table.username),
+  index("users_username_idx").on(table.username),
+]);
 
 export const gradeLevels = mysqlTable(
   "grade_levels",
@@ -61,6 +64,8 @@ export const gradeLevels = mysqlTable(
       .references(() => schools.id),
     name: varchar("name", { length: 64 }).notNull(),
     lateTimeOverride: time("late_time_override"),
+    fridayLateTimeOverride: time("friday_late_time_override"),
+    lateTimeOverridesByWeekday: json("late_time_overrides_by_weekday").$type<Record<string, string | null> | null>(),
   },
   (table) => [
     index("grade_levels_school_idx").on(table.schoolId),
@@ -78,6 +83,9 @@ export const sections = mysqlTable(
       .notNull()
       .references(() => gradeLevels.id),
     name: varchar("name", { length: 64 }).notNull(),
+    lateTimeOverride: time("late_time_override"),
+    fridayLateTimeOverride: time("friday_late_time_override"),
+    lateTimeOverridesByWeekday: json("late_time_overrides_by_weekday").$type<Record<string, string | null> | null>(),
   },
   (table) => [
     index("sections_school_idx").on(table.schoolId),

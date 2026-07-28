@@ -62,6 +62,7 @@ export function AppSidebar() {
     { title: "Checked Out", url: "/today/present", icon: UserCheck },
     { title: "Late Arrivals", url: "/today/late", icon: Clock },
     { title: "On Campus", url: "/today/pending-checkout", icon: AlertTriangle },
+    { title: "Absent Students", url: "/today/absent", icon: UserX },
     { title: "Not Checked In", url: "/today/not-checked-in-yet", icon: HelpCircle },
   ];
 
@@ -106,15 +107,15 @@ export function AppSidebar() {
   };
 
   return (
-    <Sidebar>
-      <SidebarHeader className="p-4">
-        <div className="flex items-center gap-2">
+    <Sidebar collapsible="icon">
+      <SidebarHeader className="p-4 group-data-[collapsible=icon]:p-2">
+        <div className="flex items-center gap-2 group-data-[collapsible=icon]:justify-center">
           <Avatar className="h-9 w-9" data-testid="avatar-app-logo">
             <AvatarFallback className="bg-primary/15 text-primary font-semibold">
               {initials || "U"}
             </AvatarFallback>
           </Avatar>
-          <div className="min-w-0">
+          <div className="min-w-0 group-data-[collapsible=icon]:hidden">
             <h2 className="text-sm font-semibold" data-testid="text-app-title">MYO Attendance</h2>
             <p className="text-xs text-muted-foreground truncate">{user?.fullName}</p>
             {user?.role === "super_admin" ? (
@@ -316,15 +317,15 @@ export function AppSidebar() {
         )}
       </SidebarContent>
 
-      <SidebarFooter className="p-4">
+      <SidebarFooter className="p-4 group-data-[collapsible=icon]:p-2">
         <Button
           variant="ghost"
-          className="w-full justify-start gap-2"
+          className="w-full justify-start gap-2 group-data-[collapsible=icon]:w-8 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-2"
           onClick={logout}
           data-testid="button-logout"
         >
           <LogOut className="h-4 w-4" />
-          <span>Sign Out</span>
+          <span className="group-data-[collapsible=icon]:hidden">Sign Out</span>
         </Button>
       </SidebarFooter>
     </Sidebar>

@@ -1,169 +1,192 @@
 # MYO Attendance
 
-School attendance platform for QR-based check-in/check-out, student management, school operations, and SMS guardian notifications.
+Multi-school attendance platform for QR-based check-in/check-out, roster management, kiosk operations, SMS guardian notifications, and school-level reporting.
 
-## Overview
+## What This App Does
 
-This app is built for multi-school attendance operations with role-based access:
+MYO Attendance is designed for schools that need:
 
-- `super_admin` manages the full platform and can switch between schools
-- `school_admin` manages one school's settings, roster, kiosks, users, and reports
-- `gate_staff` uses the kiosk scanner and operational attendance views
-- `teacher` sees only assigned sections and can review attendance data and mark students absent/excused
+- role-based access for admins, gate staff, and teachers
+- QR-driven attendance capture at gates or kiosks
+- student roster and section management
+- holiday-aware attendance logic
+- SMS notifications to guardians
+- reports, exports, and basic operational maintenance tools
 
-The system combines:
+The same backend supports:
 
-- browser kiosk scanning with USB scanners
-- camera-based QR scanning on mobile/tablet
-- manual attendance actions
-- guardian SMS notifications through Semaphore
-- reports, exports, and log maintenance tools
+- browser-based admin screens
+- kiosk scanning with USB/HID scanners
+- camera-based scanning in the web UI
+- a Capacitor mobile shell that loads the mobile scanner route
 
-## Core Functionality
+## Roles
 
-### 1. Authentication and School Branding
+- `super_admin`
+  Manages the full platform, all schools, billing settings, users, and maintenance actions.
+- `school_admin`
+  Manages one school's students, kiosks, settings, holidays, SMS templates, and reports.
+- `gate_staff`
+  Uses kiosk scanning and operational attendance actions.
+- `teacher`
+  Sees only assigned sections and can review attendance plus mark absent/excused where allowed.
 
-- Session-based login/logout
-- Branded login by school slug using `/?school=slug`
-- Public school branding endpoint for login/mobile scanner logo and display name
-- Super admin school switcher for viewing another school's records without re-login
+## UI and Main Screens
 
-### 2. Dashboard and Daily Monitoring
+### Login and Branding
 
-- Date-based dashboard for today or historical dates
-- KPI cards for:
-  - present today
-  - late arrivals
-  - checked out
-  - still on campus
-  - absent
-  - not yet checked in
-  - total active students
-- Recent activity feed with admin clear action
-- Attendance by grade breakdown
-- "Missed Check-Out Yesterday" alert panel
-- "Students Needing Attention" panel based on attendance risk flags and trend scoring
+- session-based login
+- branded login screen per school slug using `/?school=<slug>`
+- public school branding for login/mobile scanner pages
+- super-admin school switcher in the main header
 
-### 3. Today's Status Views
+### Dashboard
 
-Dedicated operational pages for:
+- KPI cards for present, late, checked out, on campus, absent, not checked in, and total active students
+- recent activity feed with clear action
+- grade-level attendance breakdown
+- missed check-out yesterday panel
+- students-needing-attention / attendance-intelligence panel
 
-- checked out students
-- late arrivals
-- on-campus students (`pending_checkout`)
-- absent students
-- not checked in yet
+### Today Views
 
-Each view supports:
+Route pattern: `/today/:status`
 
-- date selection
-- student search
-- grade filter
-- section filter
+Operational screens for:
+
+- checked out
+- late
+- on campus / pending checkout
+- absent
+- not yet checked in
+
+These support:
+
+- date filtering
+- grade and section filters
+- student name / ID search
 - pagination
-- manual check-in/check-out actions where applicable
 - teacher section scoping
-- missed check-out warning badges
 
-### 4. Student Management
+### Students
 
-- Create, edit, delete students
-- Active and inactive student rosters
-- Student photo upload to `uploads/students`
-- Guardian name and phone storage
-- Grade level and section assignment
-- Search by student name or ID
-- Bulk selection
-- Bulk delete
-- Bulk assign section
-- Single-student QR printing
-- Batch QR printing with A4 print layout
-- QR token regeneration per student
-- School-wide QR token regeneration from student numbers
-- Teacher/admin absent and excused marking with date and note
+- active student roster
+- inactive student roster
+- student create/edit/delete
+- student photo upload
+- QR print and QR regeneration
+- bulk delete
+- bulk assign section
+- import via CSV
+- year-end promotion workflow
 
-### 5. CSV Student Import
+### Grade Levels and Sections
 
-- CSV template download
-- Import preview before commit
-- Row-level validation feedback
-- Phone normalization during preview
-- Confirm step that imports only valid rows
+- grade-level CRUD
+- late-time override per grade level
+- section CRUD
+- section-to-grade mapping
 
-Expected CSV columns:
+### Kiosk Locations
 
-- `Grade Level`
-- `First Name`
-- `Last Name`
-- `Student ID`
-- `Contact Number`
+- kiosk CRUD
+- kiosk slug support
+- direct scanner page for gate use
 
-### 6. Student Promotion Workflow
+### Kiosk Scanner UI
 
-- Bulk promotion screen for year-end rollover
-- Filter by current grade/section
-- Per-student action selection:
-  - promote
-  - retain
-  - graduate
-  - transfer out
-- Target grade and section selection
-- Bulk action application
-- Promotion summary and validation before commit
+Current kiosk scanner behavior:
 
-### 7. Grade Levels and Sections
+- dedicated `Ready to scan` capture area instead of a visible token textbox
+- hidden focused input to accept USB/HID scanner data
+- auto-submit only when the scanned value matches the expected 32-character hex QR token format
+- camera scanner using `jsQR`
+- centered success confirmation overlay
+- recent scans list directly under the camera section
+- success confirmation stays visible for 5 seconds but does not block new scans
+- kiosk page keeps the session alive while open
 
-- CRUD for grade levels
-- Optional late-time override per grade level
-- CRUD for sections
-- Section-to-grade mapping
-- Teacher section assignment support
+### School Settings
 
-### 8. User Management
+- school name
+- login slug
+- school logo upload
+- attendance timings
+- SMS toggles and credits
+- monthly overage rate
+- dashboard attention-panel toggle
+- school-wide QR token generation
 
-- Create, edit, delete users
-- Roles supported:
-  - `super_admin`
-  - `school_admin`
-  - `gate_staff`
-  - `teacher`
-- Super admin can assign users to schools
-- Teachers can be restricted to specific sections
-- Teachers only see roster and attendance data for assigned sections
+### Holidays
 
-### 9. Kiosk Locations and Scanning
+- holiday CRUD
+- holiday, no-classes, and special-schedule types
 
-- CRUD for kiosk locations
-- Kiosk location slug support
-- Dedicated kiosk scanner page for gate operations
-- Text-input scanning for USB barcode/QR scanners
-- Camera QR scanning using `jsQR`
-- Kiosk keeps the session alive while open
-- Recent scans list
-- Student result card with photo and action result
+### SMS Templates and Logs
 
-Scan behavior includes:
+- editable per-school SMS templates
+- template enable/disable
+- test SMS
+- SMS log filtering and export
+- queue/retry/reconcile flow
 
-- resolves QR token, student number, numeric student ID, or URL-style QR payloads
-- checks school scope before accepting a student
-- skips inactive students
-- prevents rapid duplicate scans using minimum scan interval
-- respects holidays
-- supports dismissal window behavior
-- records attendance events with kiosk location context
+### Reports
 
-### 10. Attendance Logic
+Supported report pages:
 
-Automatic and manual attendance flows include:
+- daily attendance
+- absentees
+- late history
+- SMS usage
+- SMS billing
 
-- first scan creates daily attendance
-- late tagging based on school late time or grade-level late-time override
-- check-out handling
-- manual check-in and check-out endpoint
-- manual absent and excused marking with audit event creation
-- previous-day missed check-out handling without blocking today's new scan
+Exports are available through the reports export endpoint.
 
-School-level attendance controls:
+## Attendance and Scanning Logic
+
+### Student QR Format
+
+Student QR tokens are generated from `studentNo` using the shared QR helper:
+
+- token format: 32-character lowercase MD5 hex string
+- QR tokens are stored in `students.qr_token`
+
+Important implication:
+
+- if `studentNo` changes or QR tokens are regenerated, old printed QR codes become outdated
+
+### Kiosk Scan Flow
+
+Kiosk scanning resolves a student using, in order:
+
+1. exact `qr_token`
+2. exact `studentNo`
+3. exact numeric student `id`
+4. URL-style payload parsing when the QR contains query params or path segments
+
+Then the backend:
+
+- validates kiosk existence
+- validates school access
+- rejects inactive students
+- rejects school mismatch
+- blocks attendance actions on holidays
+- applies duplicate-scan protection using the school's minimum scan interval
+- creates check-in / late / check-out attendance events
+- sends queued SMS notifications where enabled
+
+### Daily Attendance States
+
+The attendance flow uses states including:
+
+- `pending_checkout`
+- `late`
+- `present`
+- absent/excused flows via manual status actions
+
+### Timing Controls
+
+School-level timing settings include:
 
 - late time
 - auto-absent cutoff time
@@ -171,183 +194,205 @@ School-level attendance controls:
 - dismissal time
 - early-out window minutes
 
-### 11. Holidays
+Grade levels can optionally override late time.
 
-- CRUD for school holidays
-- holiday types:
-  - `holiday`
-  - `no_classes`
-  - `special_schedule`
-- Holidays are excluded from attendance KPIs, reports, and attendance-risk scoring
+## SMS Behavior
 
-### 12. SMS Notifications
+The app integrates with Semaphore for guardian messaging.
 
-Supported via Semaphore:
+Current active template/event types in the main UI flow:
 
 - `check_in`
 - `check_out`
 - `late`
 - `absent`
 
-Features:
+Supported behavior:
 
-- per-school SMS enable/disable
-- absent SMS toggle per school
-- editable SMS templates
-- template enable/disable controls
-- template token replacement:
-  - `{school_name}`
-  - `{student_name}`
-  - `{grade_level}`
-  - `{section}`
-  - `{date}`
-  - `{time}`
-  - `{status}`
-- test SMS endpoint
-- SMS logs with export
-- queue-based SMS notification processing
-- retry and reconcile flow for provider delivery states
-- monthly SMS credits and overage-rate tracking per school
+- school-level SMS enable/disable
+- absent SMS toggle
+- per-school monthly SMS credits
+- overage rate tracking
+- queued processing
+- retry handling
+- reconcile flow for submitted provider states
 
-Currently not used in the UI flow:
+Do not store API keys or provider secrets in this README.
 
-- break movement templates
-- early-out templates
-- `out_final`
+## API Summary
 
-### 13. SMS Logs and Billing
+All application endpoints are defined in [server/routes.ts](/C:/Users/Charlie/Desktop/Github/attendance/server/routes.ts:1394).
 
-- Filter SMS logs by date range
-- Export SMS logs to CSV
-- Super admin SMS log deletion by date range
-- SMS usage report by date
-- Super admin SMS billing report by month across schools
-- Included credits and overage amount calculation
+### Auth
 
-### 14. Reports and Data Export
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/public/school-branding`
+- `GET /api/auth/me`
+- `POST /api/auth/switch-school`
 
-Available reports:
+### Users
 
-- daily report
-- late history
-- absentees
-- SMS usage
-- SMS billing
+- `GET /api/users`
+- `POST /api/users`
+- `PATCH /api/users/:id`
+- `DELETE /api/users/:id`
 
-Report capabilities:
+### Dashboard and Operational Views
 
-- date-range filters
-- grade filter
-- section filter
-- student name filter
-- student ID filter
-- CSV export
-- teacher section scoping
+- `GET /api/dashboard`
+- `DELETE /api/dashboard/recent-activity`
+- `GET /api/attendance-intelligence`
+- `GET /api/today/:status`
 
-Admin maintenance actions:
+### Students
 
-- super admin can delete single late/absent history records
-- super admin can bulk delete daily attendance records by filtered date range
+- `GET /api/students`
+- `POST /api/students`
+- `POST /api/students/photo`
+- `PATCH /api/students/:id`
+- `POST /api/students/:id/regenerate-qr-token`
+- `POST /api/students/promotions/apply`
+- `POST /api/students/bulk-assign-section`
+- `DELETE /api/students/:id`
+- `POST /api/students/import/preview`
+- `POST /api/students/import/confirm`
 
-### 15. Multi-School Administration
+### Grade Levels and Sections
 
-Super admin features:
+- `GET /api/grade-levels`
+- `POST /api/grade-levels`
+- `PATCH /api/grade-levels/:id`
+- `DELETE /api/grade-levels/:id`
+- `GET /api/sections`
+- `POST /api/sections`
+- `PATCH /api/sections/:id`
+- `DELETE /api/sections/:id`
 
-- create, edit, delete schools
-- create a school together with its initial school-admin account
-- school-specific Semaphore configuration
-- school-specific monthly SMS credits
-- school-specific overage rate
-- school switching in the app header
+### Kiosks and Scanning
 
-School settings features:
+- `GET /api/kiosks`
+- `POST /api/kiosks`
+- `PATCH /api/kiosks/:id`
+- `DELETE /api/kiosks/:id`
+- `POST /api/kiosk/scan`
 
-- school name
-- login slug
-- login logo upload
-- fixed timezone display
-- attendance timing rules
-- SMS toggles
-- dashboard attention-panel toggle
+### Attendance Actions
 
-### 16. Maintenance and Operational Tools
+- `POST /api/attendance/manual`
+- `POST /api/attendance/status`
 
-- super admin log purge by date range
-- delete attendance logs and/or SMS logs separately
-- dashboard recent-activity clear action
-- school-wide QR token regeneration
-- cron endpoint to auto-mark absentees after cutoff
-- cron endpoint to process SMS queue
-- cron endpoint to reconcile submitted SMS
+### School Settings and Maintenance
 
-## Cron and Queue Processing
+- `GET /api/settings/school`
+- `POST /api/settings/school/logo`
+- `PATCH /api/settings/school`
+- `POST /api/settings/school/generate-student-qr-tokens`
+- `POST /api/settings/purge-logs`
 
-The app supports two operating styles for background tasks:
+### Holidays
 
-### Express endpoints
+- `GET /api/holidays`
+- `POST /api/holidays`
+- `PATCH /api/holidays/:id`
+- `DELETE /api/holidays/:id`
+
+### SMS
+
+- `GET /api/sms-templates`
+- `PATCH /api/sms-templates/:id`
+- `GET /api/sms-logs`
+- `GET /api/sms-logs/export`
+- `POST /api/sms/test`
+
+### Schools
+
+- `GET /api/schools`
+- `POST /api/schools`
+- `PATCH /api/schools/:id`
+- `DELETE /api/schools/:id`
+
+### Reports
+
+- `GET /api/reports/daily`
+- `GET /api/reports/absentees`
+- `GET /api/reports/late-history`
+- `DELETE /api/reports/attendance/:id`
+- `POST /api/reports/attendance/bulk-delete`
+- `GET /api/reports/sms-usage`
+- `GET /api/reports/sms-billing`
+- `GET /api/reports/:type/export`
+
+### Cron / Background Processing
 
 - `POST /api/cron/mark-absent`
 - `POST /api/cron/process-sms`
 - `POST /api/cron/reconcile-sms`
 
-Use header:
+These expect the `x-cron-secret` header. Do not document the actual secret value in source control.
 
-```bash
-x-cron-secret: YOUR_SECRET
-```
+## Frontend Routes
 
-If `CRON_SECRET` is not set, the server code currently falls back to a built-in default secret. That should be overridden in production.
+Defined in [client/src/App.tsx](/C:/Users/Charlie/Desktop/Github/attendance/client/src/App.tsx:1).
 
-### PHP cPanel workers
+- `/login`
+- `/mobile/scanner`
+- `/`
+- `/today/:status`
+- `/students`
+- `/students/import`
+- `/students/inactive`
+- `/students/promotion`
+- `/grade-levels`
+- `/sections`
+- `/kiosks`
+- `/gate/kiosks`
+- `/settings/school`
+- `/settings/holidays`
+- `/settings/sms-templates`
+- `/sms-logs`
+- `/schools`
+- `/users`
+- `/reports/:type`
 
-The `cron_imp/` folder contains PHP CLI workers for shared hosting or cPanel deployments:
+## CSV Import Format
 
-- `process_sms.php`
-- `reconcile_sms.php`
+Expected CSV headings:
 
-These process queued notifications directly against MySQL and Semaphore.
+- `Grade Level`
+- `First Name`
+- `Last Name`
+- `Student ID`
+- `Contact Number`
 
-## API Areas
-
-Main endpoint groups:
-
-- Auth: login, logout, current user, school switch, public branding
-- Users: CRUD and teacher section assignment
-- Dashboard: KPIs, recent activity, attendance intelligence
-- Today views: daily operational attendance lists
-- Students: CRUD, photo upload, QR regeneration, bulk section assignment, promotion apply, CSV import
-- Grade levels and sections: CRUD
-- Kiosks: CRUD and scan endpoint
-- Attendance: manual check-in/out and absent/excused status
-- School settings: school profile, logo upload, QR generation, log purge
-- Holidays: CRUD
-- SMS: templates, logs, export, test send
-- Schools: super-admin school CRUD
-- Reports: daily, absentees, late history, SMS usage, SMS billing, CSV export
-- Cron: absent marking, SMS processing, SMS reconciliation
+The import preview validates rows before confirm.
 
 ## Tech Stack
 
-- Frontend: React 18, TypeScript, Vite, Tailwind, shadcn/ui, wouter, TanStack Query
+- Frontend: React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui, Wouter, TanStack Query
 - Backend: Express 5, TypeScript, drizzle-orm, MySQL, express-session
-- Mobile shell: Capacitor (`android/`, `ios/`)
-- QR handling: `qrcode` for generation, `jsQR` for camera decoding
+- Mobile shell: Capacitor
+- QR generation: `qrcode`
+- Camera QR decoding: `jsQR`
 - SMS provider: Semaphore
 
 ## Project Structure
 
-- `client/` React frontend
-- `server/` Express API and business logic
-- `shared/` schema, types, shared helpers
-- `migrations/` database migrations
-- `uploads/` runtime uploads for student and school images
-- `cron_imp/` PHP SMS queue workers for cPanel/shared-hosting environments
+- `client/` frontend app
+- `server/` API routes and business logic
+- `shared/` schema and shared helpers
+- `migrations/` drizzle migrations
+- `uploads/` uploaded student and school assets
+- `cron_imp/` PHP CLI workers for shared-hosting SMS queue processing
 - `android/` Capacitor Android project
 - `ios/` Capacitor iOS project
+- `dist/` built production output
 
-## Environment
+## Environment Variables
 
-Create `.env` in the project root:
+Create a local `.env` file in the project root.
+
+Example shape only:
 
 ```env
 DATABASE_URL=mysql://USER:PASSWORD@HOST:PORT/DB
@@ -357,19 +402,22 @@ PORT=5000
 CRON_SECRET=replace-this
 ```
 
-Optional SMS-related environment behavior is primarily stored per school in the database, not in `.env`.
+Notes:
 
-## Commands
+- keep real secrets out of this README
+- SMS provider configuration is largely stored per school in the database
 
-- Install: `npm install`
-- Dev: `npm run dev`
-- Typecheck: `npm run check`
-- Build: `npm run build`
-- Start production build: `npm run start`
-- Push schema: `npm run db:push`
-- Generate migrations: `npm run db:generate`
-- Run migrations: `npm run db:migrate`
-- Rebuild app container on file changes: `npm run docker:watch`
+## Local Commands
+
+- install dependencies: `npm install`
+- run dev server: `npm run dev`
+- type-check: `npm run check`
+- build production bundle: `npm run build`
+- start production build: `npm run start`
+- push schema: `npm run db:push`
+- generate migrations: `npm run db:generate`
+- run migrations: `npm run db:migrate`
+- watch and rebuild Docker app: `npm run docker:watch`
 
 ## Docker
 
@@ -382,21 +430,39 @@ docker compose up --build -d
 Useful commands:
 
 ```powershell
+docker compose ps
 docker compose logs -f app
 docker compose down
+docker compose up -d --build app
 ```
 
-Notes:
+Current compose ports:
 
-- the app is exposed at `http://localhost:5000`
-- MySQL is available to the app at `db:3306`
-- database data is persisted in the `mysql_data` volume
-- uploads are persisted in local `./uploads`
+- app: `http://localhost:5100`
+- phpMyAdmin: `http://localhost:8082`
+- MySQL host port: `3317`
 
-## Notes and Limitations
+Container details are defined in [docker-compose.yml](/C:/Users/Charlie/Desktop/Github/attendance/docker-compose.yml:1).
 
-- Session storage uses `memorystore`; for multi-instance production, move to a shared session store.
-- Only Semaphore SMS is implemented.
-- The system timezone is effectively fixed to Philippine time in the application logic.
-- Mobile scanner is a responsive web screen plus Capacitor wrapper, not a separate native attendance backend.
-- Some schema fields remain from older SMS policy designs, but the active UI flow is centered on the simplified check-in/check-out/late/absent templates and queued delivery process.
+## Mobile / Capacitor Notes
+
+The Capacitor shell is configured in [capacitor.config.ts](/C:/Users/Charlie/Desktop/Github/attendance/capacitor.config.ts:1).
+
+Current behavior:
+
+- `webDir` points to `dist/public`
+- Capacitor is configured to load a hosted mobile scanner URL through `server.url`
+- local Docker rebuilds do not automatically update the remote hosted mobile scanner deployment
+
+That means:
+
+- browser testing against `localhost:5100` shows local changes
+- the Capacitor app may still show hosted content until that hosted target is updated or redirected
+
+## Known Operational Notes
+
+- sessions use `memorystore`; for multi-instance production, move to a shared session store
+- application date logic is centered on Philippine time handling
+- HID/USB scanners behave like keyboards, so the app captures scanner input through a hidden input field
+- the current kiosk camera scanner is still web-based via `jsQR`, not native barcode APIs
+- old printed QR codes can become invalid if student numbers or QR tokens are regenerated

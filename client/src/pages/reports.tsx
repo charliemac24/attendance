@@ -10,12 +10,13 @@ import { formatDatabaseTime, localIsoDate } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Calendar, Download, ClipboardList, FileText, MessageSquare, Clock, Trash2 } from "lucide-react";
+import { Calendar, Download, ClipboardList, FileText, MessageSquare, Clock, Trash2, CheckCircle2 } from "lucide-react";
 import { useRoute } from "wouter";
 import type { GradeLevel, Section } from "@shared/schema";
 
 interface ReportRecord {
   attendanceId?: number;
+  studentId: number;
   studentName: string;
   studentNo: string;
   gradeLevel: string;
@@ -63,6 +64,8 @@ export default function ReportsPage() {
   const Icon = config.icon;
   const { user } = useAuth();
   const { toast } = useToast();
+  const canMarkExcused = ["super_admin", "school_admin", "gate_staff"].includes(user?.role || "");
+  const canExportCsv = ["super_admin", "school_admin"].includes(user?.role || "");
 
   const today = localIsoDate();
   const defaultStartDate = `${today.slice(0, 8)}01`;
@@ -128,6 +131,29 @@ export default function ReportsPage() {
     },
   });
 
+  const excuseAttendanceMutation = useMutation({
+    mutationFn: async ({ studentId, date }: { studentId: number; date: string }) => {
+      await apiRequest("POST", "/api/attendance/status", {
+        studentId,
+        status: "excused",
+        date,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [reportQueryUrl] });
+      queryClient.invalidateQueries({
+        predicate: (query) => {
+          const key = query.queryKey[0] as string;
+          return key?.startsWith("/api/today") || key?.startsWith("/api/dashboard");
+        },
+      });
+      toast({ title: "Student marked excused" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
   const handleExport = () => {
     if (reportType === "sms-billing") {
       window.open(`/api/reports/sms-billing/export?month=${month}`, "_blank");
@@ -151,10 +177,12 @@ export default function ReportsPage() {
             <p className="text-sm text-muted-foreground">{config.description}</p>
           </div>
         </div>
-        <Button variant="outline" onClick={handleExport} data-testid="button-export">
-          <Download className="h-4 w-4 mr-1" />
-          Export CSV
-        </Button>
+        {canExportCsv && (
+          <Button variant="outline" onClick={handleExport} data-testid="button-export">
+            <Download className="h-4 w-4 mr-1" />
+            Export CSV
+          </Button>
+        )}
         {user?.role === "super_admin" && reportType === "daily" && (
           <Button
             variant="destructive"
@@ -278,10 +306,13 @@ export default function ReportsPage() {
               reportType={reportType}
               canDeleteHistory={
                 user?.role === "super_admin" &&
-                (reportType === "late-history" || reportType === "absentees")
+                reportType === "late-history"
               }
+              canMarkExcused={canMarkExcused && reportType === "absentees"}
               onDeleteRecord={(attendanceId) => deleteAttendanceMutation.mutate(attendanceId)}
+              onExcuseRecord={(studentId, date) => excuseAttendanceMutation.mutate({ studentId, date })}
               isDeleting={deleteAttendanceMutation.isPending}
+              isUpdatingExcused={excuseAttendanceMutation.isPending}
             />
           )}
         </CardContent>
@@ -333,14 +364,20 @@ function AttendanceTable({
   data,
   reportType,
   canDeleteHistory,
+  canMarkExcused,
   onDeleteRecord,
+  onExcuseRecord,
   isDeleting,
+  isUpdatingExcused,
 }: {
   data: ReportRecord[];
   reportType: string;
   canDeleteHistory: boolean;
+  canMarkExcused: boolean;
   onDeleteRecord: (attendanceId: number) => void;
+  onExcuseRecord: (studentId: number, date: string) => void;
   isDeleting: boolean;
+  isUpdatingExcused: boolean;
 }) {
   if (data.length === 0) {
     return (
@@ -361,7 +398,7 @@ function AttendanceTable({
             <th className="text-left py-3 px-4 font-medium">Check-in</th>
             <th className="text-left py-3 px-4 font-medium">Check-out</th>
             <th className="text-left py-3 px-4 font-medium">Status</th>
-            {canDeleteHistory && <th className="text-right py-3 px-4 font-medium">Actions</th>}
+            {(canDeleteHistory || canMarkExcused) && <th className="text-right py-3 px-4 font-medium">Actions</th>}
           </tr>
         </thead>
         <tbody>
@@ -392,23 +429,39 @@ function AttendanceTable({
               }
             />
           </td>
-              {canDeleteHistory && (
+              {(canDeleteHistory || canMarkExcused) && (
                 <td className="py-3 px-4 text-right">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    disabled={isDeleting || !r.attendanceId}
-                    onClick={() => {
-                      if (!r.attendanceId) return;
-                      const ok = window.confirm(
-                        `Delete this ${reportType === "late-history" ? "late" : "absentee"} history record for ${r.studentName} on ${r.date}?`,
-                      );
-                      if (ok) onDeleteRecord(r.attendanceId);
-                    }}
-                    data-testid={r.attendanceId ? `button-delete-history-${r.attendanceId}` : undefined}
-                  >
-                    <Trash2 className="h-4 w-4 text-destructive" />
-                  </Button>
+                  <div className="flex items-center justify-end gap-2">
+                    {canMarkExcused && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={isUpdatingExcused}
+                        onClick={() => onExcuseRecord(r.studentId, r.date)}
+                        data-testid={`button-excuse-history-${r.studentId}`}
+                      >
+                        <CheckCircle2 className="h-4 w-4 mr-1" />
+                        Excused
+                      </Button>
+                    )}
+                    {canDeleteHistory && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        disabled={isDeleting || !r.attendanceId}
+                        onClick={() => {
+                          if (!r.attendanceId) return;
+                          const ok = window.confirm(
+                            `Delete this ${reportType === "late-history" ? "late" : "absentee"} history record for ${r.studentName} on ${r.date}?`,
+                          );
+                          if (ok) onDeleteRecord(r.attendanceId);
+                        }}
+                        data-testid={r.attendanceId ? `button-delete-history-${r.attendanceId}` : undefined}
+                      >
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    )}
+                  </div>
                 </td>
               )}
             </tr>
